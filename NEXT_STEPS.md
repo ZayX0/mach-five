@@ -197,14 +197,19 @@ at ~150MB/day live). Server-side checklist, in order:
    superseded — kept only as session-1/2 artifacts while the laptop's
    copy is still mid-flight; delete after cutover. Arm with:
    `nohup .venv/bin/python3 pilot_launch.py --decide <ISO>Z >> pilot.log 2>&1 &`
-7. CUTOVER: laptop recorder booted out 2026-08-05 23:0xZ (its last slate
-   recorded through the pilot; launchd agent still installed but not
-   running — retire the plist after a clean server day). Pi recorder
-   starts next: pull 8546fcb first, then
-   `systemctl enable --now mach-five-recorder`; verify with
-   `journalctl -u mach-five-recorder -f` and confirm day-folder files
-   appear. Two two-speed pollers would blow the 20k/month Odds API
-   quota — never run both.
+7. DONE 2026-08-05 23:35Z — CUTOVER: laptop recorder booted out 23:0xZ
+   (its last slate recorded through the pilot; launchd agent still
+   installed but not running — retire the plist after a clean server
+   day). Pi recorder enabled + started on 5641802 (8546fcb pulled):
+   trade WS connected, 7 in-window games opened, all event types
+   verified in the files (meta/pinnacle/book/trade/lineup), 0 restarts.
+   Two two-speed pollers would blow the 20k/month Odds API quota —
+   never run both. KNOWN WART, 08-05 only: the Pi re-recorded that
+   night's in-flight games (23:35Z onward) under the same filenames the
+   laptop had already rsynced to /mach-five — once the nightly archive
+   moves them, 08-05-2026/ holds a laptop .jsonl (pre-game) AND a Pi
+   .jsonl.gz (in-game tail) for ~7 games; dedupe before replaying that
+   day.
 8. Live sessions move last: run one paper day on the server (recorder +
    replay), then the next pilot launches from the server with the same
    MACH_FIVE_LIVE/MACH_FIVE_SLUGS gates.
