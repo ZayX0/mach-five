@@ -135,18 +135,20 @@ at ~150MB/day live). Server-side checklist, in order:
    `/etc/mach-five/*.cred` (or root-owned 0600 plain files with
    `LoadCredential=`) — names `mach-five-key-id` / `mach-five-secret-key`,
    matching what `creds()` reads. NEVER `.env`.
-4. Mount the NFS at `/mnt/nfs/mach-five` (fstab, hard mount) and rsync the
+4. Mount the NFS at `/mach-five` (fstab, hard mount; done 2026-08-05 —
+   192.168.0.200:/volume1/backups/mach-five) and rsync the
    laptop's `recordings/` there once (keep `intl/` with it).
 5. Edit paths/user in `deploy/*.service` to the server's layout, install
    all three units, `systemctl enable --now` the recorder service and the
    archive timer. `for f in tests/check_*.py; do python3 $f; done` on the
    server first — all offline, no key needed.
-6. Fix the BSD-ism before any server pilot: `date -u -r "$EPOCH"` in
-   pilot2_run.sh is macOS-only (Linux: `date -u -d "@$EPOCH"`). Deferred
-   on 2026-08-05 because the script was mid-execution (editing a running
-   bash script corrupts it). Better: fold the launcher into a small
-   Python script — cross-platform, and the pick/launch/watchdog logic
-   gets a check script.
+6. DONE 2026-08-05: the launcher is now `pilot_launch.py` (cross-platform
+   Python; decide time via `--decide`, pick via `pilot_pick.ranked_rows`,
+   same wait -> pick -> launch -> SIGTERM watchdog arc, checked offline by
+   `tests/check_pilot_launch.py`). `pilot_run.sh`/`pilot2_run.sh` are
+   superseded — kept only as session-1/2 artifacts while the laptop's
+   copy is still mid-flight; delete after cutover. Arm with:
+   `nohup .venv/bin/python3 pilot_launch.py --decide <ISO>Z >> pilot.log 2>&1 &`
 7. CUTOVER IN ONE MOTION: `launchctl bootout gui/$(id -u)/com.mach-five.recorder`
    on the laptop, then start the server unit — two two-speed pollers
    would blow the 20k/month Odds API quota. Verify with

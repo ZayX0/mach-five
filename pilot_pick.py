@@ -64,12 +64,19 @@ def _notional(slug: str) -> int:
         return 0
 
 
-def main() -> int:
-    now = time.time()
+def ranked_rows(now: float) -> list[tuple[str, float, int]]:
+    """The live ranking — one Odds API credit plus a gateway book fetch
+    per candidate. Shared entry point for the CLI below and
+    pilot_launch.py's pick step."""
     cache: dict = {}
-    rows = rank(odds_feed.pinnacle_moneylines().values(), now,
+    return rank(odds_feed.pinnacle_moneylines().values(), now,
                 lambda g: us_market.find_market(g, search_cache=cache),
                 _notional)
+
+
+def main() -> int:
+    now = time.time()
+    rows = ranked_rows(now)
     for slug, pitch, cents in rows:
         mins = (pitch - now) / 60.0
         print(f"  {slug:40s} pitch in {mins:5.0f}m   traded ${cents / 100:>10,.0f}",
