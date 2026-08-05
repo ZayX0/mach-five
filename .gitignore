@@ -13,6 +13,7 @@ nohup.out
 # python
 __pycache__/
 *.pyc
+.venv/
 
 # macOS
 .DS_Store

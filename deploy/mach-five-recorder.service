@@ -12,10 +12,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Adjust user/paths to the server's layout before installing.
-User=mach5
-WorkingDirectory=/home/mach5/mach-five
-ExecStart=/usr/bin/python3 recorder.py run
+User=zayfu
+WorkingDirectory=/home/zayfu/mach-five
+ExecStart=/home/zayfu/mach-five/.venv/bin/python3 recorder.py run
 Restart=always
 RestartSec=5
 # Polymarket US API creds, exposed at $CREDENTIALS_DIRECTORY/<name> —
