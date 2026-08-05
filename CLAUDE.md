@@ -33,7 +33,12 @@ No build system — plain Python scripts, one concern per module.
   `launchctl kickstart -k gui/$(id -u)/com.mach-five.recorder`. Stop for
   real: `launchctl bootout gui/$(id -u)/com.mach-five.recorder` (a plain
   `kill` just triggers a supervised restart). Analyze with
-  `python3 replay.py recordings` (expands day folders, skips `intl/`).
+  `python3 replay.py recordings` (expands day folders — `.jsonl` and
+  archived `.jsonl.gz` alike — skips `intl/`).
+- **Archive closed days:** `python3 archive_recordings.py recordings <dest>`
+  gzip-moves day folders older than today UTC (and quiet 6h+) to bulk
+  storage; on the Linux server this runs nightly via `deploy/` systemd
+  units (see NEXT_STEPS "Linux server migration").
 - Dependencies: `requests`, `python-dotenv` (installed in the environment; no
   requirements file yet).
 

@@ -117,6 +117,45 @@ guide; read 2026-07-31).
 (The old EIP-712 / py-clob-client / allowances path applies only to the
 international venue and was removed; see git/file history if ever needed.)
 
+## Linux server migration (prepared 2026-08-05)
+
+Repo-side work is DONE: git repo (initial commit cd84e65, `.gitignore`
+excludes `.env`/`recordings/`/logs), `us_market.creds()` auto-selects the
+systemd-credentials backend when `$CREDENTIALS_DIRECTORY` is set (Keychain
+otherwise), `replay.py` reads `.jsonl.gz`, `archive_recordings.py` +
+`deploy/` units handle the local-disk -> NFS nightly archive (recorder
+writes local so an NFS stall can never cost tape; 8GB internal is plenty
+at ~150MB/day live). Server-side checklist, in order:
+
+1. Push to a PRIVATE remote (GitHub private or a bare repo on the server
+   over SSH); clone on the server.
+2. `python3 -m pip install requests python-dotenv polymarket_us websockets`
+   (match the laptop's versions); copy `.env` (ODDS_API_KEY only) by hand.
+3. Venue creds: `systemd-creds encrypt` the two values into
+   `/etc/mach-five/*.cred` (or root-owned 0600 plain files with
+   `LoadCredential=`) — names `mach-five-key-id` / `mach-five-secret-key`,
+   matching what `creds()` reads. NEVER `.env`.
+4. Mount the NFS at `/mnt/nfs/mach-five` (fstab, hard mount) and rsync the
+   laptop's `recordings/` there once (keep `intl/` with it).
+5. Edit paths/user in `deploy/*.service` to the server's layout, install
+   all three units, `systemctl enable --now` the recorder service and the
+   archive timer. `for f in tests/check_*.py; do python3 $f; done` on the
+   server first — all offline, no key needed.
+6. Fix the BSD-ism before any server pilot: `date -u -r "$EPOCH"` in
+   pilot2_run.sh is macOS-only (Linux: `date -u -d "@$EPOCH"`). Deferred
+   on 2026-08-05 because the script was mid-execution (editing a running
+   bash script corrupts it). Better: fold the launcher into a small
+   Python script — cross-platform, and the pick/launch/watchdog logic
+   gets a check script.
+7. CUTOVER IN ONE MOTION: `launchctl bootout gui/$(id -u)/com.mach-five.recorder`
+   on the laptop, then start the server unit — two two-speed pollers
+   would blow the 20k/month Odds API quota. Verify with
+   `tail -f recorder.log` on the server and one `pinnacle_moneylines()`
+   smoke call. Retire the laptop launchd plist after a clean server day.
+8. Live sessions move last: run one paper day on the server (recorder +
+   replay), then the next pilot launches from the server with the same
+   MACH_FIVE_LIVE/MACH_FIVE_SLUGS gates.
+
 ## Also pending (from earlier findings)
 
 - ~~Record Polymarket US market data~~ DONE 2026-08-01: `recorder.py` now
