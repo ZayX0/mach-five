@@ -96,6 +96,53 @@ guide; read 2026-07-31).
    `nohup ./pilot2_run.sh > /dev/null 2>&1 &`. On the first fill, run the
    step-8 verification checklist (positions keyed by slug, poll_fills
    latency, skew direction).
+   RUN 2026-08-05 (CWS-BOS again — genuinely the leader among
+   Pinnacle-priced games): ZERO fills, $0 P&L, clean shutdown. What it
+   proved: the VERIFY layer caught 14 intermittent silent rejections
+   live (create responses always look normal — orders.list is the only
+   detection); tape guard's 2nd live firing ($7,655 print); keepalive
+   recovered two feed drops in ~10s. What it found: the odds-dict KEY
+   COLLISION (fixed, 8546fcb) — tomorrow's same-matchup line replaced
+   the live game at 21:58Z and the loop held on a phantom stale anchor
+   through the richest 70min of flow. Fills remain unproven; the
+   positions-keyed-by-slug checklist carries to session 3.
+
+## Session 3 priorities (from the session-2 post-mortem, 2026-08-05)
+
+1. **Picker: rank on our own recorded tape, not the gateway stat.**
+   `stats.notionalTraded` RESETS on a ~21:00Z daily session roll (read
+   $60k at 18:14Z, $35k at 21:48Z same market — not cumulative), and
+   games with no Pinnacle line at decision time are silently invisible
+   (2026-08-05 the true volume leaders — LAD-CHC $1.8M, TOR-HOU $1.0M by
+   tape — were never candidates; unquotable without an anchor, but the
+   picker should SAY so). Recorder tape sums are ground truth and can't
+   reset. Consider re-ranking at launch time (leader can change; Pinnacle
+   posts some lines late).
+2. **Keep-in-place quoting** — stop resetting queue position: today
+   step() cancel-replaces every 60s tick even at an unchanged price, so
+   we rejoin the back of the queue forever (why session 1+2 sat behind
+   deep levels). Change: only cancel-replace when the SNAPPED price or
+   size changes; the repost decision must key off `open_orders` (what
+   actually rests), never "what we posted last tick", or silent
+   rejections become permanent dark sides (session 1's bug, deliberate).
+   Never replace on a coarser threshold than a tick — the sweep showed
+   ~half a tick of staleness flips markout negative. RUN THE REPLAY
+   EXPERIMENT FIRST: simulate() keep-in-place variant vs live behavior,
+   pessimistic queue, quantify fills gained vs markout cost.
+3. **Anchor resilience.** Pinnacle really does delist pre-game lines
+   early sometimes (Dodgers-Cubs 08-03, ~70min before pitch; several
+   08-05 games never priced). Options: second sharp book in the same
+   Odds API call as fallback anchor (same credit cost, wider
+   spread/smaller size under the softer anchor), or accept the shortened
+   window. Decide with data: how often does the anchor die inside the
+   quote window across the campaign recordings?
+4. **First real fill** — everything above serves this; on it, run the
+   step-8 checklist (positions keyed by slug, poll_fills latency, skew
+   direction) before any size increase.
+
+Data caveat for replay work: recordings BEFORE 2026-08-05 (fix 8546fcb)
+may have silently dropped/merged doubleheader games and same-matchup
+series overlaps in the fv feed — treat doubleheader days with suspicion.
 
 8. **First live session at pilot size**: DONE 2026-08-04 in code —
    `BASE_SIZE = 40` and `MAX_INVENTORY = 100` are set in `mach_five.py`
@@ -127,8 +174,9 @@ otherwise), `replay.py` reads `.jsonl.gz`, `archive_recordings.py` +
 writes local so an NFS stall can never cost tape; 8GB internal is plenty
 at ~150MB/day live). Server-side checklist, in order:
 
-1. Push to a PRIVATE remote (GitHub private or a bare repo on the server
-   over SSH); clone on the server.
+1. DONE 2026-08-05: private GitHub remote (ZayX0/mach-five), cloned on
+   the Pi; keep both sides rebased on origin/main — the 8546fcb odds-key
+   fix MUST be pulled on the Pi before its recorder starts.
 2. `python3 -m pip install requests python-dotenv polymarket_us websockets`
    (match the laptop's versions); copy `.env` (ODDS_API_KEY only) by hand.
 3. Venue creds: `systemd-creds encrypt` the two values into
@@ -149,11 +197,14 @@ at ~150MB/day live). Server-side checklist, in order:
    superseded — kept only as session-1/2 artifacts while the laptop's
    copy is still mid-flight; delete after cutover. Arm with:
    `nohup .venv/bin/python3 pilot_launch.py --decide <ISO>Z >> pilot.log 2>&1 &`
-7. CUTOVER IN ONE MOTION: `launchctl bootout gui/$(id -u)/com.mach-five.recorder`
-   on the laptop, then start the server unit — two two-speed pollers
-   would blow the 20k/month Odds API quota. Verify with
-   `tail -f recorder.log` on the server and one `pinnacle_moneylines()`
-   smoke call. Retire the laptop launchd plist after a clean server day.
+7. CUTOVER: laptop recorder booted out 2026-08-05 23:0xZ (its last slate
+   recorded through the pilot; launchd agent still installed but not
+   running — retire the plist after a clean server day). Pi recorder
+   starts next: pull 8546fcb first, then
+   `systemctl enable --now mach-five-recorder`; verify with
+   `journalctl -u mach-five-recorder -f` and confirm day-folder files
+   appear. Two two-speed pollers would blow the 20k/month Odds API
+   quota — never run both.
 8. Live sessions move last: run one paper day on the server (recorder +
    replay), then the next pilot launches from the server with the same
    MACH_FIVE_LIVE/MACH_FIVE_SLUGS gates.

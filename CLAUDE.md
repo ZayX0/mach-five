@@ -26,15 +26,17 @@ No build system — plain Python scripts, one concern per module.
 - **Run all checks:** `for f in tests/check_*.py; do python3 $f; done`
 - **Live feed test (needs key):** requires `ODDS_API_KEY` in `.env` (loaded via
   python-dotenv). E.g. `python3 -c "from odds_feed import pinnacle_moneylines; print(len(pinnacle_moneylines()))"`.
-- **Record market data:** runs as the launchd agent `com.mach-five.recorder`
-  (`~/Library/LaunchAgents/com.mach-five.recorder.plist`: KeepAlive restart
-  on crash, starts at login, wraps the recorder in `caffeinate -i`; logs to
-  recorder.log, timestamps UTC time-only). After a code change:
-  `launchctl kickstart -k gui/$(id -u)/com.mach-five.recorder`. Stop for
-  real: `launchctl bootout gui/$(id -u)/com.mach-five.recorder` (a plain
-  `kill` just triggers a supervised restart). Analyze with
+- **Record market data:** since 2026-08-05 the recorder runs on the Pi
+  server (`deploy/mach-five-recorder.service`, systemd, Restart=always;
+  `journalctl -u mach-five-recorder -f`). After a code change there:
+  `git pull && sudo systemctl restart mach-five-recorder`. NEVER run a
+  second recorder on this laptop — two two-speed pollers blow the
+  20k/month Odds API quota (the old launchd agent
+  `com.mach-five.recorder` is stopped but still installed; kickstart
+  would resurrect it). Analyze with
   `python3 replay.py recordings` (expands day folders — `.jsonl` and
-  archived `.jsonl.gz` alike — skips `intl/`).
+  archived `.jsonl.gz` alike — skips `intl/`); laptop recordings through
+  2026-08-05 live here, later slates land on the Pi/NFS.
 - **Archive closed days:** `python3 archive_recordings.py recordings <dest>`
   gzip-moves day folders older than today UTC (and quiet 6h+) to bulk
   storage; on the Linux server this runs nightly via `deploy/` systemd
