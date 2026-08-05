@@ -69,7 +69,25 @@ def pinnacle_moneylines(
             "oddsFormat": "american",
         },
     )
-    return dict(filter(None, (_extract(e) for e in events)))
+    out: dict[str, Game] = {}
+    for event in events:
+        ext = _extract(event)
+        if ext is None:
+            continue
+        market_id, game = ext
+        if market_id in out:
+            # Same matchup priced twice — a doubleheader, or the series'
+            # next game posted while today's is still live. A plain
+            # away@home key silently drops one (seen live 2026-08-05:
+            # tomorrow's CWS-BOS REPLACED the in-session pilot game and
+            # the loop held on a phantom stale anchor). First game keeps
+            # the plain key (the API orders by commence time); later
+            # duplicates get a commence-stamped key.
+            stamp = (f"{game.commence_time:%Y%m%d%H%M}"
+                     if game.commence_time else str(len(out)))
+            market_id = f"{market_id}|{stamp}"
+        out[market_id] = game
+    return out
 
 
 def _extract(event: dict) -> tuple[str, Game] | None:
