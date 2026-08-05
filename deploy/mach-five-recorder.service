@@ -1,0 +1,28 @@
+# Recorder as a systemd unit — the Linux replacement for the launchd agent
+# com.mach-five.recorder (KeepAlive -> Restart=always; caffeinate is moot
+# on a server). Install:
+#   sudo cp deploy/mach-five-recorder.service /etc/systemd/system/
+#   sudo systemd-creds encrypt --name=mach-five-key-id <(printf '%s' "$KEY_ID") /etc/mach-five/key-id.cred        # or use plain LoadCredential files, 0600 root
+#   sudo systemctl daemon-reload && sudo systemctl enable --now mach-five-recorder
+# Logs: journalctl -u mach-five-recorder -f   (recorder.log still written too)
+[Unit]
+Description=mach-five market recorder (Polymarket US + Pinnacle fv)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust user/paths to the server's layout before installing.
+User=mach5
+WorkingDirectory=/home/mach5/mach-five
+ExecStart=/usr/bin/python3 recorder.py run
+Restart=always
+RestartSec=5
+# Polymarket US API creds, exposed at $CREDENTIALS_DIRECTORY/<name> —
+# us_market.creds() picks this backend up automatically (never .env/logs).
+# Plain-file variant: LoadCredential=mach-five-key-id:/etc/mach-five/key-id
+LoadCredentialEncrypted=mach-five-key-id:/etc/mach-five/key-id.cred
+LoadCredentialEncrypted=mach-five-secret-key:/etc/mach-five/secret-key.cred
+
+[Install]
+WantedBy=multi-user.target

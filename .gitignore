@@ -1,0 +1,18 @@
+# secrets — ODDS_API_KEY only; venue creds live in the Keychain (macOS)
+# or systemd credentials (Linux), never in files here
+.env
+
+# market data — moved by rsync once, then accrues on the server; archived
+# to bulk storage by archive_recordings.py, never versioned
+recordings/
+
+# runtime logs
+*.log
+nohup.out
+
+# python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

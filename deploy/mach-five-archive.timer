@@ -1,0 +1,14 @@
+# Nightly archive run. 12:00 UTC is hours after the last west-coast game
+# ends (~05:00Z) and hours before the next slate's critical window — and
+# archive_recordings.py additionally refuses days written to within 6h.
+#   sudo cp deploy/mach-five-archive.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now mach-five-archive.timer
+[Unit]
+Description=nightly mach-five recordings archive
+
+[Timer]
+OnCalendar=*-*-* 12:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
