@@ -131,11 +131,19 @@ guide; read 2026-07-31).
    pessimistic queue, quantify fills gained vs markout cost.
 3. **Anchor resilience.** Pinnacle really does delist pre-game lines
    early sometimes (Dodgers-Cubs 08-03, ~70min before pitch; several
-   08-05 games never priced). Options: second sharp book in the same
+   08-05 games never priced; 2026-08-06 the entire feed was dark
+   ~11:30-15:00Z — all MLB events returned empty bookmaker lists while
+   quota was fine). Options: second sharp book in the same
    Odds API call as fallback anchor (same credit cost, wider
    spread/smaller size under the softer anchor), or accept the shortened
-   window. Decide with data: how often does the anchor die inside the
-   quote window across the campaign recordings?
+   window. DATA GATHERING LIVE since 2026-08-06 15:29Z: the recorder
+   fetches betonlineag in the same billed call (verified
+   x-requests-last=1) and appends `betonline` events to every open
+   recording — including polls where Pinnacle is missing, which is the
+   consistency measurement itself. Nothing reads them yet (replay skips
+   unknown types). Decide with data: coverage of betonline during
+   Pinnacle gaps, and betonline-vs-pinnacle fv error where both exist
+   (is the softer anchor good enough inside the quote window?).
 4. **First real fill** — everything above serves this; on it, run the
    step-8 checklist (positions keyed by slug, poll_fills latency, skew
    direction) before any size increase.

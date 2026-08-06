@@ -8,6 +8,12 @@ per MLB slate day, Eastern date) with record types:
     {"type": "meta", ...}      once: teams, side tokens, US slug + long side,
                                venue, commence_ts
     {"type": "pinnacle", ...}  Pinnacle prices + devigged fv, per odds poll
+    {"type": "betonline", ...} COMPARE_BOOK's line for the same game, same
+                               poll (one billed call covers both books) —
+                               recorded ONLY to compare anchor consistency
+                               after Pinnacle's 2026-08-06 feed-wide
+                               blackout; nothing reads it yet, and replay
+                               skips unknown types
     {"type": "book", ...}      A=home-frame book per side per market poll
                                (side A carries the raw state + stats too;
                                side B is the complement mirror — the US venue
@@ -47,7 +53,8 @@ from pathlib import Path
 import lineups
 import us_market
 from fair_value import fair_prob
-from odds_feed import Game, pinnacle_moneylines, _redact_key
+from odds_feed import (COMPARE_BOOK, SHARP_BOOK, Game, moneylines_by_book,
+                       _redact_key)
 
 REC_DIR = Path(__file__).parent / "recordings"
 
@@ -211,6 +218,29 @@ def record_odds(rec: Recording, game: Game, ts: float) -> None:
     })
 
 
+def record_compare_odds(rec: Recording, game: Game, ts: float) -> None:
+    """COMPARE_BOOK's line for a game we're already recording — appended
+    even on polls where Pinnacle is missing (that asymmetry IS the
+    consistency measurement). Same shape as "pinnacle" under its own type
+    so every existing consumer stays blind to it."""
+    rec.append({
+        "type": "betonline", "ts": ts,
+        "price_home": game.price_home, "price_away": game.price_away,
+        "fv": fair_prob(game.price_home, game.price_away),
+    })
+
+
+def find_recording(recs, game: Game) -> Recording | None:
+    """The open recording covering `game`, matched on teams + first pitch.
+    Exact equality is safe: both books' Games come from the SAME feed
+    event, and a reschedule opens a new recording under the new time."""
+    for r in recs:
+        if (r.game.home == game.home and r.game.away == game.away
+                and r.game.commence_time == game.commence_time):
+            return r
+    return None
+
+
 def record_books(rec: Recording, ts: float, get_json=None) -> None:
     """One US book fetch -> two A-frame side lines (B is the mirror)."""
     kw = {"get_json": get_json} if get_json is not None else {}
@@ -306,10 +336,12 @@ def run() -> None:
         if now_ts >= odds_due:
             poll_ok = True
             try:
-                games = pinnacle_moneylines()
+                by_book = moneylines_by_book()
+                games = by_book.get(SHARP_BOOK, {})
+                compare = by_book.get(COMPARE_BOOK, {})
             except Exception as e:  # keep recording on feed hiccups
                 _log(f"odds poll failed: {e}")
-                games, poll_ok = {}, False
+                games, compare, poll_ok = {}, {}, False
             for market_id, game in games.items():
                 if not in_window(game, now_dt):
                     continue
@@ -335,6 +367,14 @@ def run() -> None:
                     recs[key] = rec
                     by_slug[rec.slug] = rec
                 record_odds(recs[key], game, now_ts)
+            # comparison book: append to already-open recordings only —
+            # tracking and meta stay Pinnacle-driven, so a game only the
+            # compare book prices never opens a file, but a tracked game
+            # keeps its betonline series through a Pinnacle blackout
+            for g in compare.values():
+                rec = find_recording(recs.values(), g)
+                if rec is not None and in_window(g, now_dt):
+                    record_compare_odds(rec, g, now_ts)
             if feed is not None:
                 feed.watch(set(by_slug))
             # two-speed cadence: recs cover games the feed drops mid-window;

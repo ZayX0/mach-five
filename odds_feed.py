@@ -1,4 +1,8 @@
-"""Pinnacle moneylines from The Odds API (api.the-odds-api.com).
+"""Pinnacle (+ comparison-book) moneylines from The Odds API
+(api.the-odds-api.com). Pinnacle is the sharp anchor everything prices
+off; COMPARE_BOOK rides along in the same billed call and is only
+recorded (see recorder.py) to judge whether it covers windows where
+Pinnacle goes dark.
 
 Base pattern lifted from mlb-prop-finder's data/sources/odds.py: GET with the
 key in the `apiKey` query param. For moneylines we use the bulk /odds
@@ -23,6 +27,12 @@ load_dotenv()
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 SPORT = "baseball_mlb"
 SHARP_BOOK = "pinnacle"
+# Recorded for anchor-consistency comparison ONLY — nothing prices off it.
+# Pinnacle went dark feed-wide for ~3.5h on 2026-08-06; if betonline proves
+# more consistently present it becomes the fallback-anchor candidate
+# (NEXT_STEPS "anchor resilience").
+COMPARE_BOOK = "betonlineag"
+BOOKS = (SHARP_BOOK, COMPARE_BOOK)
 
 Transport = Callable[[str, dict[str, Any]], Any]
 
@@ -50,12 +60,15 @@ def requests_transport(url: str, params: dict[str, Any]) -> Any:
     return r.json()
 
 
-def pinnacle_moneylines(
-    *, api_key: str | None = None, get_json: Transport = requests_transport
-) -> dict[str, Game]:
-    """market_id -> Game (Pinnacle h2h only). Side A = home, side B = away.
-    Games where Pinnacle has not posted a two-way h2h line are skipped.
-    """
+def moneylines_by_book(
+    *, api_key: str | None = None, get_json: Transport = requests_transport,
+    books: tuple[str, ...] = BOOKS,
+) -> dict[str, dict[str, Game]]:
+    """book -> (market_id -> Game) from ONE billed call. The Odds API bills
+    per market x region and the `bookmakers` param counts every 10 books as
+    one region, so requesting pinnacle + betonlineag together still costs a
+    single credit. Games where a book has no two-way h2h line are absent
+    from that book's dict."""
     key = api_key or os.environ.get("ODDS_API_KEY")
     if not key:
         raise RuntimeError("ODDS_API_KEY not set — put it in a .env file")
@@ -64,39 +77,52 @@ def pinnacle_moneylines(
         f"{ODDS_API_BASE}/sports/{SPORT}/odds",
         {
             "apiKey": key,
-            "bookmakers": SHARP_BOOK,   # bills only Pinnacle's region
+            "bookmakers": ",".join(books),
             "markets": "h2h",
             "oddsFormat": "american",
         },
     )
-    out: dict[str, Game] = {}
+    out: dict[str, dict[str, Game]] = {b: {} for b in books}
     for event in events:
-        ext = _extract(event)
-        if ext is None:
-            continue
-        market_id, game = ext
-        if market_id in out:
-            # Same matchup priced twice — a doubleheader, or the series'
-            # next game posted while today's is still live. A plain
-            # away@home key silently drops one (seen live 2026-08-05:
-            # tomorrow's CWS-BOS REPLACED the in-session pilot game and
-            # the loop held on a phantom stale anchor). First game keeps
-            # the plain key (the API orders by commence time); later
-            # duplicates get a commence-stamped key.
-            stamp = (f"{game.commence_time:%Y%m%d%H%M}"
-                     if game.commence_time else str(len(out)))
-            market_id = f"{market_id}|{stamp}"
-        out[market_id] = game
+        for book in books:
+            ext = _extract(event, book)
+            if ext is None:
+                continue
+            market_id, game = ext
+            seen = out[book]
+            if market_id in seen:
+                # Same matchup priced twice — a doubleheader, or the series'
+                # next game posted while today's is still live. A plain
+                # away@home key silently drops one (seen live 2026-08-05:
+                # tomorrow's CWS-BOS REPLACED the in-session pilot game and
+                # the loop held on a phantom stale anchor). First game keeps
+                # the plain key (the API orders by commence time); later
+                # duplicates get a commence-stamped key.
+                stamp = (f"{game.commence_time:%Y%m%d%H%M}"
+                         if game.commence_time else str(len(seen)))
+                market_id = f"{market_id}|{stamp}"
+            seen[market_id] = game
     return out
 
 
-def _extract(event: dict) -> tuple[str, Game] | None:
-    """Pull the (home, away) Pinnacle h2h prices for one event, or None."""
+def pinnacle_moneylines(
+    *, api_key: str | None = None, get_json: Transport = requests_transport
+) -> dict[str, Game]:
+    """market_id -> Game (Pinnacle h2h only). Side A = home, side B = away.
+    Games where Pinnacle has not posted a two-way h2h line are skipped.
+    The underlying call also fetches COMPARE_BOOK (same single credit) —
+    consumers that want it use moneylines_by_book directly (the recorder)."""
+    return moneylines_by_book(api_key=api_key, get_json=get_json)[SHARP_BOOK]
+
+
+def _extract(event: dict, book_key: str = SHARP_BOOK) -> tuple[str, Game] | None:
+    """Pull the (home, away) h2h prices one bookmaker posted for one event,
+    or None when that book has no complete two-way line."""
     home, away = event.get("home_team"), event.get("away_team")
     market_id = f"{away}@{home}"
     prices: dict[str, int] = {}
     for book in event.get("bookmakers", []):
-        if book.get("key") != SHARP_BOOK:
+        if book.get("key") != book_key:
             continue
         for market in book.get("markets", []):
             if market.get("key") != "h2h":

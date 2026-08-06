@@ -16,9 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import us_market
 from odds_feed import Game
 from recorder import (ODDS_POLL_SEC, ODDS_POLL_SLOW_SEC, RESOLVED_404S,
-                      _SECRETS, _log, _slug, in_window, is_resolved_404,
-                      odds_interval, open_recording, record_books,
-                      record_lineups, record_odds, record_trade)
+                      _SECRETS, _log, _slug, find_recording, in_window,
+                      is_resolved_404, odds_interval, open_recording,
+                      record_books, record_compare_odds, record_lineups,
+                      record_odds, record_trade)
 
 
 def check() -> None:
@@ -86,6 +87,15 @@ def check() -> None:
         # 7:15PM EDT game -> the 08-01-2026 slate
         assert rec.path.parent.name == "08-01-2026", rec.path
         record_odds(rec, game, 1000.0)
+        # compare book (betonlineag): joined to the open recording by
+        # teams + first pitch, appended under its own type — recorded even
+        # on polls where Pinnacle is dark (that's the point)
+        bo = Game("Chicago Cubs", "New York Yankees", -140, 126, dt)
+        assert find_recording([rec], bo) is rec
+        assert find_recording([rec], Game("Chicago Cubs", "New York Yankees",
+                                          -140, 126, None)) is None
+        assert find_recording([], bo) is None
+        record_compare_odds(rec, bo, 1001.0)
         record_books(rec, 1010.0, get_json=fake_get)
 
         # trades: instrument is Yankees(away)-long; a taker SELL prints on B,
@@ -114,10 +124,12 @@ def check() -> None:
 
         lines = [json.loads(l) for l in rec.path.read_text().splitlines()]
         types = [l["type"] for l in lines]
-        assert types == ["meta", "pinnacle", "book", "book",
+        assert types == ["meta", "pinnacle", "betonline", "book", "book",
                          "trade", "trade", "lineup"], types
-        meta, _, book_a, book_b, tr1, tr2, _ = lines
+        meta, _, bol, book_a, book_b, tr1, tr2, _ = lines
         assert meta["venue"] == "us" and meta["long_side"] == "B"
+        assert (bol["price_home"], bol["price_away"]) == (-140, 126)
+        assert 0.0 < bol["fv"] < 1.0
         # instrument book was Yankees-long 0.40/0.42 -> A(home Cubs) 0.58/0.60
         assert (book_a["best_bid"], book_a["best_ask"]) == (0.58, 0.6), book_a
         assert book_a["state"] == "OPEN" and book_b["side"] == "B"
