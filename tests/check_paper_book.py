@@ -65,6 +65,30 @@ def check() -> None:
     q2.post("A", 0.47, 47.0, ts=0.0, queue_ahead=1000.0)
     q2.on_trade(1.0, "tokA", "SELL", 0.46, 100.0)
     assert abs(q2.pos_a - 100.0) < 1e-9 and q2.fills[0].price == 0.47
+
+    # cancel_side clears one side only; posts counts ACCEPTED orders
+    c = PaperBook("tokA", "tokB", latency=0.0)
+    c.post("A", 0.5, 50.0, ts=0.0)
+    c.post("B", 0.4, 40.0, ts=0.0)
+    c.post("A", 0.5, 0.0, ts=0.0)                    # rejected: not counted
+    assert c.posts == 2
+    c.cancel_side("A")
+    assert [o.side for o in c.orders] == ["B"] and c.posts == 2
+
+    # queue retention — the point of keep-if-unchanged: a HELD order keeps
+    # its eaten-down queue; a cancel-repost rejoins behind the full display
+    held = PaperBook("tokA", "tokB", latency=0.0)
+    repost = PaperBook("tokA", "tokB", latency=0.0)
+    for b in (held, repost):
+        b.post("A", 0.47, 94.0, ts=0.0, queue_ahead=100.0)
+        b.on_trade(1.0, "tokA", "SELL", 0.47, 80.0)   # queue 100 -> 20
+    assert held.orders[0].queue_ahead == 20.0
+    repost.cancel_side("A")
+    repost.post("A", 0.47, 94.0, ts=1.5, queue_ahead=100.0)  # back of line
+    for b in (held, repost):
+        b.on_trade(2.0, "tokA", "SELL", 0.47, 50.0)
+    assert abs(held.pos_a - 30.0) < 1e-9, held.pos_a   # 20 eaten, 30 to us
+    assert repost.pos_a == 0.0                         # all 50 to the queue
     print("ok")
 
 

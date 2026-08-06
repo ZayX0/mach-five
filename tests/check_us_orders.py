@@ -5,8 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from us_orders import (UsBook, cancel_market, create_rejected, net_a_shares,
-                       open_orders, place_bid, snap_bid)
+from us_orders import (UsBook, cancel_market, cancel_order, create_rejected,
+                       net_a_shares, open_orders, place_bid, snap_bid)
 
 
 class FakeOrders:
@@ -15,7 +15,7 @@ class FakeOrders:
     rests — mirroring that orders.list is the authority."""
 
     def __init__(self, respond=None):
-        self.created, self.cancels = [], []
+        self.created, self.cancels, self.single_cancels = [], [], []
         self.open = []
         self.respond = respond or (lambda params: None)
 
@@ -34,6 +34,10 @@ class FakeOrders:
         ids = [o["id"] for o in self.open if o["marketSlug"] in slugs]
         self.open = [o for o in self.open if o["marketSlug"] not in slugs]
         return {"canceledOrderIds": ids}
+
+    def cancel(self, order_id, params=None):
+        self.single_cancels.append(order_id)
+        self.open = [o for o in self.open if o["id"] != order_id]
 
     def list(self):
         return {"orders": self.open}
@@ -125,8 +129,42 @@ def check() -> None:
     b.net_a = -10.0
     assert abs(b.inventory_dollars(0.48) + 10.0 * 0.52) < 1e-9
     b.post("A", 0.472, 100.0)
+    # post tracks the resting bid (id, SNAPPED price, $) for the keep policy
+    assert b.resting["A"] == {"id": "O1", "price": 0.47, "dollars": 100.0}
     b.cancel_all()
     assert len(c2.orders.created) == 1 and len(c2.orders.cancels) == 1
+    assert b.resting == {}                      # cancel_all drops tracking
+
+    # single-order cancel hits the by-id endpoint with the market slug
+    c3 = FakeClient()
+    oid = place_bid(c3, "aec-mlb-x-y", "A", "A", price=0.47, dollars=50.0)
+    cancel_order(c3, "aec-mlb-x-y", oid)
+    assert c3.orders.single_cancels == [oid]
+    assert open_orders(c3, "aec-mlb-x-y") == []
+
+    # keep-policy plumbing: per-side cancel keeps the other side; open_ids
+    # is the authority the keep decision checks tracking against
+    c4 = FakeClient()
+    b4 = UsBook("aec-mlb-x-y", "A", client=c4)
+    oid_a = b4.post("A", 0.472, 100.0)
+    oid_b = b4.post("B", 0.514, 100.0)
+    ids = b4.open_ids()
+    assert ids == {oid_a, oid_b}
+    b4.cancel_side("A", ids)
+    assert c4.orders.single_cancels == [oid_a]
+    assert "A" not in b4.resting and b4.open_ids() == {oid_b}
+    b4.cancel_side("A", ids)          # nothing tracked: no venue call
+    assert c4.orders.single_cancels == [oid_a]
+    # a tracked order that no longer rests is dropped without a venue call
+    b4.resting["B"]["id"] = "gone"
+    b4.cancel_side("B", b4.open_ids())
+    assert c4.orders.single_cancels == [oid_a] and b4.resting == {}
+    # strays (resting but untracked — a prior run's leftovers) get swept
+    assert b4.cancel_strays(b4.open_ids()) == 1     # oid_b, orphaned above
+    assert b4.open_ids() == set() and b4.cancel_strays(b4.open_ids()) == 0
+    # a failed post clears the side's tracking instead of leaving a ghost
+    c4.orders.respond = lambda p: {"id": "X", "status": "ORDER_STATUS_REJECTED"}
+    assert b4.post("A", 0.472, 100.0) is None and "A" not in b4.resting
     print("ok")
 
 

@@ -35,7 +35,7 @@ no real orders).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import us_market
 
@@ -128,6 +128,13 @@ def cancel_market(client, slug: str) -> list[str]:
     return resp.get("canceledOrderIds", []) if isinstance(resp, dict) else []
 
 
+def cancel_order(client, slug: str, order_id: str) -> None:
+    """Cancel ONE resting order. The keep-if-unchanged requote policy
+    replaces a single side; cancel_all would surrender the other side's
+    queue spot too."""
+    client.orders.cancel(order_id, {"marketSlug": slug})
+
+
 def net_a_shares(client, slug: str, long_side: str) -> float:
     """Signed A-frame net contracts for one market (+ = long home team).
     netPosition is signed in the LONG side's terms; flip when away is long.
@@ -147,12 +154,20 @@ def net_a_shares(client, slug: str, long_side: str) -> float:
 @dataclass
 class UsBook:
     """One game's US market from mach_five's point of view: A-frame
-    post/cancel plus real inventory from the portfolio endpoint."""
+    post/cancel plus real inventory from the portfolio endpoint.
+
+    `resting` tracks the last posted bid per side (id, snapped price, $ size)
+    so mach_five.step can KEEP an unchanged quote instead of cancel-replacing
+    every tick. It is a belief, not the authority — step checks the id
+    against open_ids() before trusting it. ponytail: `dollars` is the size
+    AT POST; a partial fill shrinks the venue remainder invisibly. Reading
+    remaining qty off the orders.list row would tighten the resize test."""
     slug: str
     long_side: str        # 'A' home-long / 'B' away-long
     client: object = None  # lazy real client; injectable in checks
     net_a: float = 0.0    # signed contracts, + = long A
     log: object = None    # callable for order-lifecycle warnings
+    resting: dict = field(default_factory=dict)  # side -> {id, price, dollars}
 
     def _c(self):
         if self.client is None:
@@ -161,14 +176,46 @@ class UsBook:
 
     def cancel_all(self) -> None:
         cancel_market(self._c(), self.slug)
+        self.resting.clear()
+
+    def cancel_side(self, side: str, open_ids: set | None = None) -> None:
+        """Cancel one side's tracked order, keeping the other side's queue
+        spot. Skips the venue call when the order is already gone (filled,
+        rejected, or absent from `open_ids` when given)."""
+        o = self.resting.pop(side, None)
+        if o is not None and (open_ids is None or o["id"] in open_ids):
+            cancel_order(self._c(), self.slug, o["id"])
+
+    def cancel_strays(self, open_ids: set) -> int:
+        """Cancel resting orders we do NOT track (a prior run's leftovers,
+        or tracking lost to a crash). Cancel-replace-every-tick swept these
+        implicitly; keep-if-unchanged never blanket-cancels, so without
+        this sweep a stray would rest unmanaged until the venue's
+        auto-cancel at game start."""
+        tracked = {o["id"] for o in self.resting.values()}
+        strays = open_ids - tracked
+        for oid in strays:
+            cancel_order(self._c(), self.slug, oid)
+        return len(strays)
 
     def post(self, side: str, price: float, dollars: float) -> str | None:
-        return place_bid(self._c(), self.slug, self.long_side,
-                         side, price, dollars, log=self.log)
+        oid = place_bid(self._c(), self.slug, self.long_side,
+                        side, price, dollars, log=self.log)
+        if oid is None:
+            self.resting.pop(side, None)
+        else:
+            self.resting[side] = {"id": oid, "price": snap_bid(price),
+                                  "dollars": dollars}
+        return oid
 
     def open_count(self) -> int:
         """How many of our orders actually rest on this market right now."""
         return len(open_orders(self._c(), self.slug))
+
+    def open_ids(self) -> set:
+        """Ids of our orders actually resting on this market — the
+        authority the keep decision checks `resting` against."""
+        return {o.get("id") for o in open_orders(self._c(), self.slug)}
 
     def poll_fills(self) -> None:
         self.net_a = net_a_shares(self._c(), self.slug, self.long_side)

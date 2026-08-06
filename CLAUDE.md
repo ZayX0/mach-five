@@ -96,7 +96,15 @@ us_orders.UsBook                  post-only bids / cancel / real positions (SDK)
   flip, never bypass it. `UsBook.poll_fills` reads real positions; the
   positions-keyed-by-slug assumption still needs a real fill to confirm.
   The public book lags order changes ~10-20s; `orders.list`/`retrieve` is
-  the authority.
+  the authority. **Requote policy is KEEP-IF-UNCHANGED**
+  (`mach_five.keep_quote`, shared with replay's policy tables so backtest
+  and live agree): `step()` cancel-replaces a side only when its snapped
+  price moves or desired size drifts > `RESIZE_FRAC` — holding the queue
+  spot is the fill edge (replay verdict 2026-08-06, 61 games: ~30x fewer
+  posts, ~30% more fills, flat markout per filled $). `UsBook.resting`
+  tracks the last bid per side, checked against `open_ids()` (the
+  authority) every tick; untracked resting orders are swept by
+  `cancel_strays` since nothing blanket-cancels anymore.
 - **Gated:** `mach_five.run()` refuses to start without `MACH_FIVE_LIVE=1`
   in the env — it places real orders with real dollars. Do not set it until
   the NEXT_STEPS gate (campaign verdict) is cleared, and only at pilot size
@@ -173,7 +181,10 @@ tape are keyless and unmetered.
 - `replay.py recordings/*.jsonl` — market-quality stats by
   minutes-to-first-pitch, plus a quote-start-time sweep driving
   `mach_five.quotes` through a `PaperBook`, scored by mark-to-fair P&L and
-  fill markout (negative markout = picked off by informed flow). A final
+  fill markout (negative markout = picked off by informed flow), and
+  requote-policy tables (pessimistic queue) scoring keep-if-unchanged
+  against cancel-replace-every-tick — the policies only separate where
+  queue position is modeled. A final
   table re-buckets fill markout relative to lineup completion — if fv
   settling is "lineups posted" in disguise, quote timing should key on the
   lineup event, not the clock.

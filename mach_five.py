@@ -18,7 +18,7 @@ would be decorative if it waited for the next 60s loop tick.
 
 SAFETY GATE: run() places REAL orders with REAL dollars. It refuses to
 start unless MACH_FIVE_LIVE=1 is set. First session must be pilot-sized:
-BASE_SIZE=100 AND MAX_INVENTORY=250 (rescale together or the skew is
+BASE_SIZE=40 AND MAX_INVENTORY=100 (rescale together or the skew is
 decorative), one or two games. ponytail: inventory left at the stop is NOT
 flattened automatically — close_position by hand or hold through
 settlement; decide per NEXT_STEPS step 8.
@@ -47,6 +47,7 @@ HALF_SPREAD = 0.006        # 0.6c each side of fair value
 BASE_SIZE = 40.0           # $ per side when flat
 MAX_INVENTORY = 100.0      # $ of one-sided exposure before we stop adding
 SKEW_STRENGTH = 0.004      # how hard inventory pushes quotes (in price units)
+RESIZE_FRAC = 0.25         # requote when desired size drifts more than this
 LOOP_SEC = 60.0            # requote cadence; every loop = 1 billed odds call
 HORIZON_H = 8.0            # only track games with first pitch this close
 LINEUP_POLL_SEC = 120.0    # MLB Stats API cadence for pending lineups
@@ -79,27 +80,57 @@ def quotes(fv: float, inventory: float) -> tuple[tuple[float, float], tuple[floa
     return (bid_a, max(0.0, size_a)), (bid_b_in_a, max(0.0, size_b))
 
 
+def keep_quote(resting_price: float, resting_dollars: float, price: float,
+               size: float, resize_frac: float | None = RESIZE_FRAC) -> bool:
+    """Keep-if-unchanged requote policy, shared with replay's policy tables
+    so backtest and live agree: hold a resting bid only when it already sits
+    at the new snapped price and its size hasn't drifted more than
+    `resize_frac` from desired (None = price-only, the research variant).
+    Never hold a side the skew shut off (size <= 0). Replay verdict
+    2026-08-06 (61 games, pessimistic queue): ~30x fewer posts, ~30% more
+    fills, flat markout per filled $ vs cancel-replace-every-tick."""
+    if size <= 0.0 or abs(resting_price - price) > us_orders.TICK / 2:
+        return False
+    return (resize_frac is None
+            or abs(resting_dollars - size) <= resize_frac * size)
+
+
 def step(book: us_orders.UsBook, price_a: int, price_b: int) -> None:
-    """One cancel-replace cycle for one game: real inventory -> fresh quotes.
-    The order layer snaps prices to the venue grid and posts post-only."""
+    """One requote cycle for one game: real inventory -> fresh quotes,
+    KEEP-IF-UNCHANGED per side (see keep_quote) — cancel-replacing every
+    tick would surrender the queue spot, and queue position is the fill
+    edge. Strays (resting orders we don't track) are swept every cycle;
+    orders.list is the authority on what actually rests."""
     fv = fair_value(price_a, price_b)
     was = book.net_a
     book.poll_fills()
     if book.net_a != was:
         _log(f"FILL {book.slug}: net_a {was:+.1f} -> {book.net_a:+.1f} contracts")
     (pa, sa), (pb, sb) = quotes(fv, book.inventory_dollars(fv))
-    book.cancel_all()                     # cancel-replace every tick
-    posted = 0
-    if sa > 0 and book.post("A", pa, sa):        # buy A YES @ pa
-        posted += 1
-    if sb > 0 and book.post("B", 1.0 - pb, sb):  # buy B YES @ (1 - pb)
-        posted += 1
-    # the venue drops would-cross post-only orders silently (pilot session
-    # 1) — orders.list is the only authority on what actually rests
-    resting = book.open_count()
-    if resting != posted:
-        _log(f"VERIFY {book.slug}: {resting}/{posted} posted orders "
-             "resting (silent post-only rejection or instant fill)")
+    want = {"A": (us_orders.snap_bid(pa), sa),          # buy A YES @ pa
+            "B": (us_orders.snap_bid(1.0 - pb), sb)}    # buy B YES @ (1-pb)
+    open_ids = book.open_ids()
+    strays = book.cancel_strays(open_ids)
+    if strays:
+        _log(f"VERIFY {book.slug}: canceled {strays} untracked order(s)")
+    kept = posted = 0
+    for side in ("A", "B"):
+        price, size = want[side]
+        o = book.resting.get(side)
+        if (o is not None and o["id"] in open_ids
+                and keep_quote(o["price"], o["dollars"], price, size)):
+            kept += 1                     # hold the queue spot
+            continue
+        book.cancel_side(side, open_ids)
+        if size > 0 and book.post(side, price, size):
+            posted += 1
+    if posted:
+        # the venue drops would-cross post-only orders silently (pilot
+        # session 1) — orders.list is the only authority on what rests
+        resting = book.open_count()
+        if resting != kept + posted:
+            _log(f"VERIFY {book.slug}: {resting}/{kept + posted} orders "
+                 "resting (silent post-only rejection or instant fill)")
 
 
 def resolve_book(game: Game) -> us_orders.UsBook | None:

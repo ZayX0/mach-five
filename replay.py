@@ -11,6 +11,14 @@ quoting turn on" two ways:
    final `lu-gated` row scores the lineup-gated strategy on the same tape:
    quote only after both lineups are confirmed AND Pinnacle has digested
    them (see lineup_gated_start); games that never get there are skipped.
+3. Requote-policy comparison: mach_five.step cancel-replaces every tick,
+   which surrenders queue priority each time. The extra pessimistic-queue
+   tables score KEEP-IF-UNCHANGED (cancel-replace a side only when its
+   tick-snapped price moves) against the same tape — queue priority only
+   exists in the pessimistic fill model, so that's where the policies
+   separate; judge by fills AND markout (the marginal fills land while our
+   quote sat still — check they aren't adversely selected), with the
+   `posts` column as the churn/venue-load proxy.
 
 Usage:  python3 replay.py [recordings/*.jsonl]   (no args: recordings/)
 Offline check: python3 tests/check_replay.py
@@ -27,7 +35,7 @@ from pathlib import Path
 from guard import LINEUP_SETTLE_EPS, LINEUP_SETTLE_POLLS
 
 import mach_five
-from mach_five import quotes
+from mach_five import RESIZE_FRAC, keep_quote, quotes
 from paper_book import PaperBook
 from us_orders import TICK, snap_bid  # noqa: F401  (TICK re-exported for tests)
 
@@ -41,6 +49,8 @@ HORIZONS = (60.0, 300.0, 1800.0)             # markout horizons, seconds
 SWEEP_FROM_MIN = (360, 240, 180, 120, 90, 60, 30)   # quote-start sweep
 QUOTE_UNTIL_MIN = 0                          # stop quoting at first pitch
 REPLAY_LATENCY_SEC = 2.0                     # order-live delay in the fill sim
+# RESIZE_FRAC (size-drift tolerance) comes from mach_five with keep_quote —
+# the live loop and the replay MUST agree on what "unchanged" means
 # lineup-gated start parameters come from guard.py — the live loop and the
 # replay MUST agree on what "Pinnacle digested the lineups" means
 
@@ -109,10 +119,21 @@ def _level_qty(bids: list, price: float) -> float:
     return sum(q for p, q in bids if abs(p - price) < 1e-6)
 
 
+def _keep(pb: PaperBook, side: str, price: float, size: float,
+          resize_frac: float | None) -> bool:
+    """Keep-if-unchanged on the paper book: hold `side`'s resting order (and
+    its partially-eaten queue spot) when the policy says so. The decision
+    itself is mach_five.keep_quote — shared so backtest and live agree."""
+    o = next((o for o in pb.orders if o.side == side), None)
+    return o is not None and keep_quote(o.price, o.dollars, price, size,
+                                        resize_frac)
+
+
 def simulate(
     meta: dict, events: list[dict],
     quote_from_min: float, quote_until_min: float = QUOTE_UNTIL_MIN,
     start_ts: float | None = None, queue: bool = False,
+    reprice_only: bool = False, resize_frac: float | None = None,
 ) -> tuple[PaperBook, list[tuple[float, float]]]:
     """Replay one game, quoting from `quote_from_min` before first pitch to
     `quote_until_min` before. `start_ts` (absolute epoch) overrides the
@@ -121,7 +142,13 @@ def simulate(
     queue=False: optimistic fills (front of queue, raw quote prices).
     queue=True: pessimistic — bids snap DOWN to the venue tick grid and
     join behind everything displayed at that level in the latest recorded
-    book snapshot (no snapshot yet -> queue 0). Truth is in between."""
+    book snapshot (no snapshot yet -> queue 0). Truth is in between.
+
+    reprice_only=True: keep-if-unchanged requote policy (see _keep) instead
+    of mach_five.step's cancel-replace-every-tick. A kept order retains its
+    latency clock and its eaten-down queue_ahead; a replaced side rejoins
+    the back of the displayed queue. Prices are snapped even when
+    queue=False — the venue grid is what defines "the price moved"."""
     commence = meta["commence_ts"]
     start = commence - quote_from_min * 60.0 if start_ts is None else start_ts
     end = commence - quote_until_min * 60.0
@@ -137,17 +164,18 @@ def simulate(
         elif e["type"] == "pinnacle":
             fv = e["fv"]
             fv_series.append((ts, fv))
-            if start <= ts <= end:          # cancel-replace, as in mach_five.step
-                pb.cancel_all()
+            if start <= ts <= end:          # requote per policy
                 (pa, sa), (pb_in_a, sb) = quotes(fv, pb.inventory_dollars(fv))
                 pb_price = 1.0 - pb_in_a
-                if queue:
+                if queue or reprice_only:
                     pa, pb_price = snap_bid(pa), snap_bid(pb_price)
-                    pb.post("A", pa, sa, ts, _level_qty(books["A"], pa))
-                    pb.post("B", pb_price, sb, ts, _level_qty(books["B"], pb_price))
-                else:
-                    pb.post("A", pa, sa, ts)
-                    pb.post("B", pb_price, sb, ts)
+                for side, price, size in (("A", pa, sa), ("B", pb_price, sb)):
+                    if reprice_only and _keep(pb, side, price, size,
+                                              resize_frac):
+                        continue            # hold the queue spot
+                    pb.cancel_side(side)    # cancel-replace, as mach_five.step
+                    pb.post(side, price, size, ts,
+                            _level_qty(books[side], price) if queue else 0.0)
         elif e["type"] == "trade":
             pb.on_trade(ts, e["token"], e["taker_side"], e["price"], e["size"])
     return pb, fv_series
@@ -216,48 +244,54 @@ def _fmt_stats(agg: dict) -> str:
 
 
 def _sweep_row(games: list[tuple[dict, list[dict]]], label: str,
-               start_for, queue: bool = False) -> str:
+               start_for, queue: bool = False, reprice_only: bool = False,
+               resize_frac: float | None = None) -> str:
     """One sweep row. `start_for(meta, events)` -> absolute quote-on ts, or
     None to skip that game (the lineup-gated strategy skips games whose
     lineups never post/settle on tape; clock strategies never skip)."""
     fills = filled = pnl = 0.0
     mo = [0.0] * len(HORIZONS)
-    skipped = 0
+    posts = skipped = 0
     for meta, events in games:
         st = start_for(meta, events)
         if st is None:
             skipped += 1
             continue
-        pb, series = simulate(meta, events, 0.0, start_ts=st, queue=queue)
+        pb, series = simulate(meta, events, 0.0, start_ts=st, queue=queue,
+                              reprice_only=reprice_only,
+                              resize_frac=resize_frac)
         if not series:
             continue
         end = meta["commence_ts"] - QUOTE_UNTIL_MIN * 60.0
         pnl += pb.pnl_mark(fv_at(series, end))
         fills += len(pb.fills)
         filled += sum(f.shares * f.price for f in pb.fills)
+        posts += pb.posts
         for i, h in enumerate(HORIZONS):
             mo[i] += sum(markout(f, series, h) for f in pb.fills)
     cells = "   ".join(f"{m:{9 + len(str(int(h)))}.2f}"
                        for m, h in zip(mo, HORIZONS))
     skip = f"   (skips {skipped}/{len(games)})" if skipped else ""
-    return (f"  {label:>9}   {int(fills):5d}   {filled:8.0f}"
+    return (f"  {label:>9}   {int(fills):5d}   {posts:6d}   {filled:8.0f}"
             f"   {pnl:10.2f}   {cells}{skip}")
 
 
-def _fmt_sweep(games: list[tuple[dict, list[dict]]],
-               queue: bool = False) -> str:
-    rows = ["  quote-from   fills   filled $   mark P&L $   " +
+def _fmt_sweep(games: list[tuple[dict, list[dict]]], queue: bool = False,
+               reprice_only: bool = False,
+               resize_frac: float | None = None) -> str:
+    rows = ["  quote-from   fills    posts   filled $   mark P&L $   " +
             "   ".join(f"markout {int(h)}s $" for h in HORIZONS),
-            "  ----------   -----   --------   ----------   " +
+            "  ----------   -----   ------   --------   ----------   " +
             "   ".join("-" * (9 + len(str(int(h)))) for h in HORIZONS)]
     for qf in SWEEP_FROM_MIN:
         rows.append(_sweep_row(
             games, f"{qf}m",
             lambda meta, events, qf=qf: meta["commence_ts"] - qf * 60.0,
-            queue=queue))
+            queue=queue, reprice_only=reprice_only, resize_frac=resize_frac))
     rows.append(_sweep_row(
         games, "lu-gated",
-        lambda meta, events: lineup_gated_start(events), queue=queue))
+        lambda meta, events: lineup_gated_start(events), queue=queue,
+        reprice_only=reprice_only, resize_frac=resize_frac))
     return "\n".join(rows)
 
 
@@ -356,6 +390,14 @@ def main(argv: list[str]) -> None:
     print("PESSIMISTIC queue (tick-snapped, join behind displayed size,")
     print("nobody ahead cancels) — lower bound; truth is in between")
     print(_fmt_sweep(games, queue=True) + "\n")
+    print("PESSIMISTIC queue, KEEP-IF-UNCHANGED: cancel-replace a side only")
+    print("when its snapped price moves (stale size keeps resting). Compare")
+    print("fills/markout/posts against the cancel-replace table above")
+    print(_fmt_sweep(games, queue=True, reprice_only=True) + "\n")
+    print("PESSIMISTIC queue, keep unless price moves OR desired size drifts")
+    print(f">{int(RESIZE_FRAC * 100)}% (skew stays live at the cost of the queue spot)")
+    print(_fmt_sweep(games, queue=True, reprice_only=True,
+                     resize_frac=RESIZE_FRAC) + "\n")
     print("Markout by fill time (widest window)")
     print(_fmt_fill_buckets(games) + "\n")
     print("Markout by fill time relative to lineup completion")

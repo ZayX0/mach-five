@@ -5,8 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from mach_five import (BASE_SIZE, MAX_INVENTORY, allowlist, fair_value,
-                       quotes, shutdown, step)
+from mach_five import (BASE_SIZE, MAX_INVENTORY, RESIZE_FRAC, allowlist,
+                       fair_value, keep_quote, quotes, shutdown, step)
 from us_orders import UsBook
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -34,12 +34,20 @@ def check() -> None:
     # fair value is team-agnostic: any devigged pair lands in (0,1)
     assert 0.0 < fair_value(-136, 124) < 1.0
 
-    # step(): one cancel-replace cycle through the real order layer (fake
-    # client) — cancel first, then a post-only bid on each side straddling fv
+    # keep_quote: the requote policy (shared with replay's policy tables)
+    assert keep_quote(0.47, 40.0, 0.47, 40.0)
+    assert not keep_quote(0.47, 40.0, 0.475, 40.0)     # price moved a tick
+    assert not keep_quote(0.47, 40.0, 0.47, 0.0)       # skew shut side off
+    assert keep_quote(0.47, 40.0, 0.47, 40.0 * (1 + RESIZE_FRAC) - 1e-6)
+    assert not keep_quote(0.47, 40.0, 0.47, 90.0)      # size drifted > 25%
+    assert keep_quote(0.47, 40.0, 0.47, 90.0, None)    # price-only variant
+
+    # step() tick 1 (nothing resting): a post-only bid on each side
+    # straddling fv; no cancels — there is nothing to cancel
     c = FakeClient()
     book = UsBook("aec-mlb-nyy-chc", long_side="B", client=c)
     step(book, -136, 124)
-    assert len(c.orders.cancels) == 1
+    assert not c.orders.cancels and not c.orders.single_cancels
     assert len(c.orders.created) == 2, c.orders.created
     a, b = c.orders.created
     assert a["intent"] == "ORDER_INTENT_BUY_SHORT"   # A=home, away is long
@@ -51,6 +59,23 @@ def check() -> None:
     assert pa4 < fv2 and pb4 < 1.0 - fv2 + 1e-9      # both bids behind fair
     assert pa4 + pb4 < 1.0, "the pair must still cost < $1 after snapping"
     assert all(o["participateDontInitiate"] for o in (a, b))
+
+    # tick 2, sharp price unchanged: both sides KEPT — no venue churn
+    step(book, -136, 124)
+    assert len(c.orders.created) == 2 and not c.orders.single_cancels
+
+    # tick 3, sharp price moves: each side cancel-replaced BY ID (never
+    # cancel_all — that would surrender both queue spots)
+    step(book, -160, 145)
+    assert len(c.orders.created) == 4
+    assert set(c.orders.single_cancels) == {"O1", "O2"}
+    assert not c.orders.cancels
+
+    # a stray resting order (prior run's leftover, not tracked) is swept
+    c.orders.open.append({"id": "stale", "marketSlug": "aec-mlb-nyy-chc"})
+    step(book, -160, 145)
+    assert "stale" in c.orders.single_cancels
+    assert len(c.orders.created) == 4                # both sides still kept
 
     # silent post-only rejection (pilot session 1): create answers with an
     # id but the order never rests -> step's orders.list check catches it

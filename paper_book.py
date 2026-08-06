@@ -59,11 +59,17 @@ class PaperBook:
     pos_a: float = 0.0   # shares
     pos_b: float = 0.0
     cost: float = 0.0    # total $ paid
+    posts: int = 0       # accepted posts — the churn counter (venue load)
     orders: list[Order] = field(default_factory=list)
     fills: list[Fill] = field(default_factory=list)
 
     def cancel_all(self) -> None:
         self.orders.clear()
+
+    def cancel_side(self, side: str) -> None:
+        """Cancel resting orders on one side only — replay's keep-if-unchanged
+        requote policy holds the other side's queue spot."""
+        self.orders = [o for o in self.orders if o.side != side]
 
     def post(self, side: str, price: float, dollars: float, ts: float,
              queue_ahead: float = 0.0) -> None:
@@ -72,6 +78,7 @@ class PaperBook:
         queue mode); 0 = front of queue (optimistic, the default)."""
         if dollars <= 0.0 or not (0.0 < price < 1.0):
             return
+        self.posts += 1
         token = self.token_a if side == "A" else self.token_b
         self.orders.append(Order(side, token, price, dollars, ts,
                                  max(0.0, queue_ahead)))

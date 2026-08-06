@@ -6,10 +6,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import mach_five
-from replay import (_fmt_fill_buckets, _fmt_lineup_buckets, _fmt_stats,
-                    _fmt_sweep, bucket, expand, fv_at, lineup_complete_ts,
-                    lineup_gated_start, markout, market_stats, simulate,
-                    snap_bid)
+from paper_book import PaperBook
+from replay import (RESIZE_FRAC, _fmt_fill_buckets, _fmt_lineup_buckets,
+                    _fmt_stats, _fmt_sweep, _keep, bucket, expand, fv_at,
+                    lineup_complete_ts, lineup_gated_start, markout,
+                    market_stats, simulate, snap_bid)
 
 
 def check() -> None:
@@ -110,11 +111,51 @@ def check() -> None:
     pbo, _ = simulate(meta, ev_q, quote_from_min=240)
     assert abs(pbo.pos_a - 200.0) < 1e-6, pbo.pos_a
 
+    # _keep: price still and size alive -> hold; anything else -> replace
+    kb = PaperBook("tokA", "tokB", latency=0.0)
+    kb.post("A", 0.49, 1000.0, ts=0.0)
+    assert _keep(kb, "A", 0.49, 1000.0, None)
+    assert not _keep(kb, "A", 0.495, 1000.0, None)   # moved one tick
+    assert not _keep(kb, "A", 0.49, 0.0, None)       # skew shut the side off
+    assert not _keep(kb, "B", 0.51, 1000.0, None)    # nothing resting
+    assert _keep(kb, "A", 0.49, 1200.0, RESIZE_FRAC)      # within 25%
+    assert not _keep(kb, "A", 0.49, 2000.0, RESIZE_FRAC)  # drifted > 25%
+
+    # keep-if-unchanged requote policy: an unchanged snapped price holds the
+    # resting order and its eaten-down queue across ticks; cancel-replace
+    # rejoins behind the full displayed size and misses the fill
+    ev_k = [
+        {"type": "book", "ts": T - 7300, "side": "A",
+         "bids": [[0.49, 150.0]], "asks": []},
+        {"type": "pinnacle", "ts": T - 7200, "fv": 0.5},
+        {"type": "trade", "ts": T - 7100, "token": "tokA",
+         "taker_side": "SELL", "price": 0.49, "size": 100.0},  # queue 150->50
+        {"type": "pinnacle", "ts": T - 7080, "fv": 0.5},       # unchanged tick
+        {"type": "trade", "ts": T - 7000, "token": "tokA",
+         "taker_side": "SELL", "price": 0.49, "size": 100.0},
+    ]
+    keep, _ = simulate(meta, ev_k, quote_from_min=240, queue=True,
+                       reprice_only=True)
+    base, _ = simulate(meta, ev_k, quote_from_min=240, queue=True)
+    assert abs(keep.pos_a - 50.0) < 1e-6, keep.pos_a   # 50 to queue, 50 to us
+    assert base.pos_a == 0.0                 # repost re-acquired the full 150
+    assert keep.posts == 2 and base.posts == 4         # churn: 2 sides/tick
+
+    # a >= 1-tick fv move DOES reprice under the keep policy (both sides)
+    ev_m = sorted(ev_k + [{"type": "pinnacle", "ts": T - 6900, "fv": 0.52}],
+                  key=lambda e: e["ts"])
+    keep2, _ = simulate(meta, ev_m, quote_from_min=240, queue=True,
+                        reprice_only=True)
+    assert keep2.posts == 4, keep2.posts
+
     # report formatting shouldn't blow up
     assert "t-pitch" in _fmt_stats(agg)
     sweep = _fmt_sweep([(meta, events)])
-    assert "quote-from" in sweep
+    assert "quote-from" in sweep and "posts" in sweep
     assert "lu-gated" in sweep and "(skips 1/1)" in sweep, sweep
+    assert "lu-gated" in _fmt_sweep([(meta, events)], queue=True,
+                                    reprice_only=True,
+                                    resize_frac=RESIZE_FRAC)
     assert "fill time" in _fmt_fill_buckets([(meta, events)])
 
     # expand: a directory recurses into day folders but skips intl/ unless
