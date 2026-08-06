@@ -88,7 +88,9 @@ us_orders.UsBook                  post-only bids / cancel / real positions (SDK)
   `BASE_SIZE` alone leaves the skew decorative — rescale
   `MAX_INVENTORY` proportionally. `HALF_SPREAD`/`SKEW_STRENGTH` are in price
   units and don't rescale. The LIVE constants in `mach_five.py` are
-  PILOT-sized (40/100, for $250 funding); `replay.py` pins research sizing
+  PILOT-sized (12/30 since 2026-08-06, $150 funding — worst case
+  $54/game; `MACH_FIVE_BASE`/`MACH_FIVE_MAX` override per session,
+  ratio enforced); `replay.py` pins research sizing
   (2000/5000) at import so every paper table keeps its historical scale —
   a deliberate split, change both only deliberately.
 
@@ -119,7 +121,7 @@ us_orders.UsBook                  post-only bids / cancel / real positions (SDK)
 - **Gated:** `mach_five.run()` refuses to start without `MACH_FIVE_LIVE=1`
   in the env — it places real orders with real dollars. Do not set it until
   the NEXT_STEPS gate (campaign verdict) is cleared, and only at pilot size
-  (`BASE_SIZE=40` + `MAX_INVENTORY=100`, already set) with `MACH_FIVE_SLUGS=<slug>`
+  (`BASE_SIZE=12` + `MAX_INVENTORY=30`, already set) with `MACH_FIVE_SLUGS=<slug>`
   restricting quoting to hand-picked market(s) — unset means the whole
   slate. Any exit (Ctrl-C, SIGTERM, crash) runs a finally-shutdown that
   cancels every tracked market so no unmanaged order outlives the loop.

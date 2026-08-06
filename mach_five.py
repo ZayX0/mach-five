@@ -17,9 +17,10 @@ Tape bursts pull IMMEDIATELY from the trade-WS callback thread — the guard
 would be decorative if it waited for the next 60s loop tick.
 
 SAFETY GATE: run() places REAL orders with REAL dollars. It refuses to
-start unless MACH_FIVE_LIVE=1 is set. First session must be pilot-sized:
-BASE_SIZE=40 AND MAX_INVENTORY=100 (rescale together or the skew is
-decorative), one or two games. ponytail: inventory left at the stop is NOT
+start unless MACH_FIVE_LIVE=1 is set. Sessions run at the coded pilot
+sizing (or a MACH_FIVE_BASE/MACH_FIVE_MAX override — 2:5 ratio enforced;
+rescale together or the skew is decorative), one or two games; keep
+games x (2*BASE + MAX_INVENTORY) under the account funding. ponytail: inventory left at the stop is NOT
 flattened automatically — close_position by hand or hold through
 settlement; decide per NEXT_STEPS step 8.
 """
@@ -41,12 +42,14 @@ from odds_feed import Game, pinnacle_moneylines
 
 # ---- config ---------------------------------------------------------------
 HALF_SPREAD = 0.006        # 0.6c each side of fair value
-# PILOT SIZING (2026-08-04, $250 funding): worst case = 2*BASE resting +
-# MAX_INVENTORY held = $180, $70 buffer. BASE:MAX must stay 2:5 or the skew
-# is decorative. Research sizing (2000/5000) is pinned by replay.py so the
+# PILOT SIZING (2026-08-06, funding cut to $150): worst case = 2*BASE
+# resting + MAX_INVENTORY held = $54/game — fits TWO games ($108, $42
+# buffer) or one with room. BASE:MAX must stay 2:5 or the skew is
+# decorative. MACH_FIVE_BASE/MACH_FIVE_MAX override per session (ratio
+# enforced); research sizing (2000/5000) is pinned by replay.py so the
 # paper tables keep their scale — rescale BOTH places deliberately.
-BASE_SIZE = 40.0           # $ per side when flat
-MAX_INVENTORY = 100.0      # $ of one-sided exposure before we stop adding
+BASE_SIZE = 12.0           # $ per side when flat
+MAX_INVENTORY = 30.0       # $ of one-sided exposure before we stop adding
 SKEW_STRENGTH = 0.004      # how hard inventory pushes quotes (in price units)
 RESIZE_FRAC = 0.25         # requote when desired size drifts more than this
 LOOP_SEC = 60.0            # requote cadence; every loop = 1 billed odds call
