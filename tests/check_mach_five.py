@@ -6,7 +6,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mach_five import (BASE_SIZE, MAX_INVENTORY, RESIZE_FRAC, allowlist,
-                       fair_value, keep_quote, quotes, shutdown, step)
+                       fair_value, keep_quote, quotes, shutdown,
+                       size_override, step)
 from us_orders import UsBook
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -111,6 +112,27 @@ def check() -> None:
                  (Path(tmp) / "j.jsonl").read_text().splitlines()]
         assert [l["type"] for l in lines] == ["tick", "pull"], lines
     Journal(path="/nonexistent-dir/x/y.jsonl").write({"a": 1})  # no raise
+
+    # size_override(): both-or-neither, ratio-locked to the coded 2:5
+    for k in ("MACH_FIVE_BASE", "MACH_FIVE_MAX"):
+        os.environ.pop(k, None)
+    assert size_override() is None
+    os.environ["MACH_FIVE_BASE"] = "20"
+    os.environ["MACH_FIVE_MAX"] = "50"
+    assert size_override() == (20.0, 50.0)
+    for bad in ({"MACH_FIVE_BASE": "20", "MACH_FIVE_MAX": "60"},   # ratio
+                {"MACH_FIVE_BASE": "20"},                          # lone var
+                {"MACH_FIVE_BASE": "x", "MACH_FIVE_MAX": "50"}):   # garbage
+        for k in ("MACH_FIVE_BASE", "MACH_FIVE_MAX"):
+            os.environ.pop(k, None)
+        os.environ.update(bad)
+        try:
+            size_override()
+            raise AssertionError(f"accepted bad override {bad}")
+        except SystemExit:
+            pass
+    for k in ("MACH_FIVE_BASE", "MACH_FIVE_MAX"):
+        os.environ.pop(k, None)
 
     # allowlist(): the pilot's one-game restriction, parsed from the env
     os.environ["MACH_FIVE_SLUGS"] = " aec-mlb-a-b , aec-mlb-c-d ,"

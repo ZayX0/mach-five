@@ -200,6 +200,31 @@ def _log(msg: str) -> None:
     print(f"[{now}] {msg}", flush=True)
 
 
+def size_override() -> tuple[float, float] | None:
+    """Optional pilot sizing from the env: MACH_FIVE_BASE + MACH_FIVE_MAX
+    (dollars). Both or neither, and the BASE:MAX ratio must match the
+    coded constants (2:5) — skew and size-shaping act on
+    inventory/MAX_INVENTORY, so a lone rescale leaves the skew
+    decorative. Applied by run() only; replay's research pinning and the
+    coded pilot defaults are untouched. Raises SystemExit on a bad
+    override: refusing to start beats quoting at accidental size."""
+    base, mx = os.environ.get("MACH_FIVE_BASE"), os.environ.get("MACH_FIVE_MAX")
+    if base is None and mx is None:
+        return None
+    if base is None or mx is None:
+        raise SystemExit("set BOTH MACH_FIVE_BASE and MACH_FIVE_MAX "
+                         "(BASE:MAX must stay 2:5) or neither")
+    try:
+        b, m = float(base), float(mx)
+    except ValueError:
+        raise SystemExit(f"non-numeric MACH_FIVE_BASE/MAX: {base!r}/{mx!r}")
+    if b <= 0 or m <= 0 or abs(b / m - BASE_SIZE / MAX_INVENTORY) > 1e-9:
+        raise SystemExit(f"MACH_FIVE_BASE:MACH_FIVE_MAX must keep the "
+                         f"{BASE_SIZE:g}:{MAX_INVENTORY:g} ratio "
+                         f"(got {b:g}:{m:g})")
+    return b, m
+
+
 def allowlist() -> set[str]:
     """MACH_FIVE_SLUGS=slug1,slug2 restricts quoting to those markets.
     The pilot quotes ONE hand-picked game — without this the loop quotes
@@ -239,10 +264,17 @@ class Quoter:
 
 
 def run() -> None:
+    global BASE_SIZE, MAX_INVENTORY
     if os.environ.get("MACH_FIVE_LIVE") != "1":
         raise SystemExit(
             "mach_five.run() places REAL orders. Set MACH_FIVE_LIVE=1 only "
             "after the NEXT_STEPS gate is cleared, at pilot size.")
+    sized = size_override()
+    if sized:
+        BASE_SIZE, MAX_INVENTORY = sized
+        _log(f"sizing override: BASE_SIZE={BASE_SIZE:g} "
+             f"MAX_INVENTORY={MAX_INVENTORY:g} (worst case per game "
+             f"~${2 * BASE_SIZE + MAX_INVENTORY:g})")
 
     lock = threading.Lock()
     quoters: dict[str, Quoter] = {}      # slug -> Quoter

@@ -21,6 +21,7 @@ tests/check_pilot_launch.py drives it offline.
 """
 import argparse
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -79,10 +80,15 @@ def spawn_pilot(slug: str, log_path: str = LOG_PATH):
         cwd=os.path.dirname(os.path.abspath(__file__)))
 
 
-def session(decide: float, pick, spawn, log, clock, sleep) -> int:
+def session(decide: float, pick, spawn, log, clock, sleep,
+            games: int = 1) -> int:
     """The full launcher arc. `pick()` -> [(slug, pitch_epoch, cents)]
-    best-first (pilot_pick.rank's shape); `spawn(slug)` -> a Popen-like
-    object (pid/poll/terminate/wait). Returns the process exit code."""
+    best-first (pilot_pick.rank's shape); `spawn(slugs_csv)` -> a
+    Popen-like object (pid/poll/terminate/wait). `games` > 1 quotes the
+    top N picks in ONE mach_five process (comma-joined allowlist):
+    launch keys off the EARLIEST pitch, the SIGTERM off the LATEST —
+    mach_five's per-game guard stops each game at its own pitch.
+    Returns the process exit code."""
     log(f"armed: deciding at {_hms(decide)}Z")
     wait_until(decide, clock, sleep)
 
@@ -96,9 +102,12 @@ def session(decide: float, pick, spawn, log, clock, sleep) -> int:
     if not rows:
         log("ABORT: no eligible game — no session today")
         return 1
-    slug, pitch, _ = rows[0]
-    launch, stop = pitch - LEAD_SEC, pitch + STOP_AFTER_SEC
-    log(f"picked {slug} (pitch {_hms(pitch)}Z); "
+    chosen = rows[:max(1, games)]
+    slug = ",".join(s for s, _, _ in chosen)
+    first = min(p for _, p, _ in chosen)
+    last = max(p for _, p, _ in chosen)
+    launch, stop = first - LEAD_SEC, last + STOP_AFTER_SEC
+    log(f"picked {slug} (first pitch {_hms(first)}Z, last {_hms(last)}Z); "
         f"launch {_hms(launch)}Z, stop {_hms(stop)}Z")
 
     wait_until(launch, clock, sleep)
@@ -127,12 +136,40 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--decide", default=None,
                     help="when to run the pick: epoch or ISO-8601, naive "
                          "stamps read as UTC (default: immediately)")
+    ap.add_argument("--games", type=int, default=1,
+                    help="quote the top N picks in one session (default 1;"
+                         " mind funding — see NEXT_STEPS session-4 notes)")
     args = ap.parse_args(argv)
     decide = parse_when(args.decide) if args.decide else time.time()
+    log = file_logger()
+
+    # SIGTERM must reach the PILOT and be WAITED on: mach_five's
+    # finally-shutdown needs a second of HTTP to cancel resting orders.
+    # Proven live 2026-08-06: `systemctl stop` TERMed the whole cgroup,
+    # the unit's main process exited instantly, and systemd's final
+    # cleanup killed the pilot mid-cancel — two orders orphaned on the
+    # venue. Run the unit with KillMode=mixed (TERM to the launcher
+    # only) and let this handler orchestrate the child's exit.
+    live: dict = {}
+
+    def forward_term(signum, frame):
+        p = live.get("proc")
+        if p is not None and p.poll() is None:
+            log("launcher SIGTERM: terminating pilot and waiting")
+            p.terminate()
+            p.wait()
+            log("pilot exited cleanly (forwarded SIGTERM)")
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, forward_term)
+
+    def spawn(slugs: str):
+        live["proc"] = spawn_pilot(slugs)
+        return live["proc"]
 
     import pilot_pick
     return session(decide, lambda: pilot_pick.ranked_rows(time.time()),
-                   spawn_pilot, file_logger(), time.time, time.sleep)
+                   spawn, log, time.time, time.sleep, games=args.games)
 
 
 if __name__ == "__main__":

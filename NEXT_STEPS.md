@@ -189,6 +189,23 @@ series overlaps in the fv feed — treat doubleheader days with suspicion.
    (the 08-06 blackout predates the deploy by 4h; the next gap is the
    real test). Carry-over items 1 (picker) and 4 (fill checklist) above
    remain open.
+4. FOUND + FIXED 2026-08-06 (session 4a abort): `systemctl stop` on a
+   pilot unit ORPHANED both resting orders — systemd TERMs the whole
+   cgroup, the unit's main process exits instantly, and the final
+   cleanup killed mach_five mid-finally (the cancel needs ~1s of HTTP).
+   The launcher-scheduled stop was never affected (it TERMs the child
+   ONLY and waits). Fix: pilot_launch's main() now traps SIGTERM,
+   forwards it to the pilot and WAITS before exiting; arm pilot units
+   with `-p KillMode=mixed -p TimeoutStopSec=45` so systemd signals the
+   launcher only. Orphans were hand-canceled within minutes (journal
+   oids made them instantly identifiable). Lesson re-learned: quoters
+   -active shutdown paths need live drills, not just clean-exit luck.
+5. **Two-game sessions at 20/50 are GO** (first: session 4b,
+   2026-08-06 19:55Z, CWS-BOS + SD-AZ): `MACH_FIVE_BASE`/`MACH_FIVE_MAX`
+   env override (both-or-neither, 2:5 ratio enforced, run()-only so
+   replay pinning is untouched) + `pilot_launch.py --games N` (top-N
+   pick, one process, comma allowlist; launch keys off the earliest
+   pitch, SIGTERM off the latest).
 
 8. **First live session at pilot size**: DONE 2026-08-04 in code —
    `BASE_SIZE = 40` and `MAX_INVENTORY = 100` are set in `mach_five.py`

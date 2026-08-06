@@ -90,6 +90,22 @@ def check() -> None:
     assert c.now < PITCH, "watchdog kept waiting after the pilot died"
     assert any("on its own" in m and "rc 1" in m for m in logs), logs
 
+    # games=2: top two picks in ONE spawn (comma allowlist); launch keys
+    # off the EARLIEST pitch, the SIGTERM off the LATEST
+    ROW2 = ("aec-mlb-sd-az-2026-08-06", PITCH + 2 * 3600, 300_000_00)
+    c = Clock(T0 - 100)
+    logs = []
+    spawned = []
+    proc = Proc(c)
+    rc = session(T0, lambda: [ROW, ROW2, ("ignored", PITCH, 1)],
+                 lambda s: spawned.append((s, c.now)) or proc,
+                 logs.append, c.time, c.sleep, games=2)
+    assert rc == 0
+    assert spawned == [(f"{ROW[0]},{ROW2[0]}", PITCH - LEAD_SEC)], spawned
+    assert proc.terminated
+    assert c.now >= ROW2[1] + STOP_AFTER_SEC, "stop must key off the LAST pitch"
+    assert c.now < ROW2[1] + STOP_AFTER_SEC + POLL_SEC
+
     # launch already inside the runway -> immediate spawn, no negative sleep
     c = Clock(PITCH - LEAD_SEC + 600)
     spawned = []
