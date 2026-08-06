@@ -73,12 +73,24 @@ def _book_at(series: list, ts: float):
     return (series[i - 1][1], series[i - 1][2]) if i else (None, [])
 
 
-def _hit(trades: list[dict], side: str, px: float, t0: float, t1: float) -> float:
-    """$ of taker-SELL prints at/below px on `side`'s token in [t0, t1)."""
-    return sum(t["price"] * t["size"] for t in trades
-               if t0 <= t["ts"] < t1 and t.get("taker_side") == "SELL"
-               and t.get("token", "").endswith(f"#{side}")
-               and t["price"] <= px + 1e-9)
+def _hit(trades: list[dict], side: str, px: float, t0: float,
+         t1: float) -> tuple[float, float]:
+    """($ at exactly px, $ strictly below px) of taker-SELL prints on
+    `side`'s token in [t0, t1). The split is the queue-vs-flow verdict:
+    prints AT px may have been eaten by displayed size ahead of us, but a
+    print BELOW px means the level swept — that flow fills a resting bid
+    regardless of queue position, so any of it is a missed fill that
+    needs explaining (latency, or the order wasn't really resting)."""
+    at = below = 0.0
+    for t in trades:
+        if not (t0 <= t["ts"] < t1 and t.get("taker_side") == "SELL"
+                and t.get("token", "").endswith(f"#{side}")):
+            continue
+        if t["price"] < px - 1e-9:
+            below += t["price"] * t["size"]
+        elif t["price"] <= px + 1e-9:
+            at += t["price"] * t["size"]
+    return at, below
 
 
 def _hms(ts: float) -> str:
@@ -92,7 +104,8 @@ def game_report(slug: str, entries: list[dict], meta: dict,
     ticks = [e for e in entries if e.get("type") == "tick"]
     pulls = [e for e in entries if e.get("type") == "pull"]
     rows, holds = [], {}
-    hit_total = {"A": 0.0, "B": 0.0}
+    hit_at = {"A": 0.0, "B": 0.0}
+    hit_below = {"A": 0.0, "B": 0.0}
     acts = {"A": {}, "B": {}}
     for i, t in enumerate(ticks):
         ts = t["ts"]
@@ -114,10 +127,12 @@ def game_report(slug: str, entries: list[dict], meta: dict,
             best, bids = _book_at(books[side], ts)
             dist = f"{(px - best) * 100:+.1f}c" if best is not None else "n/a"
             ahead = _level_qty(bids, px)
-            hit = _hit(trades, side, px, ts, t1)
-            hit_total[side] += hit
+            at, below = _hit(trades, side, px, ts, t1)
+            hit_at[side] += at
+            hit_below[side] += below
+            swept = f" SWEPT ${below:,.0f}" if below else ""
             cells.append(f"{side} {s['act'][:4]} {px:.3f} ({dist} vs bid, "
-                         f"{ahead:8,.0f} at lvl, hit ${hit:,.0f})")
+                         f"{ahead:8,.0f} at lvl, hit ${at:,.0f}{swept})")
         rows.append(f"  {_hms(ts)}  Q     " + "   ".join(cells))
     # pulls: queue age thrown away = pull ts - each side's `since`
     pull_lines = []
@@ -137,8 +152,11 @@ def game_report(slug: str, entries: list[dict], meta: dict,
            + (f"(holds: {', '.join(f'{k} x{v}' for k, v in holds.items())})"
               if holds else ""),
            f"  acts: A {acts['A']}   B {acts['B']}",
-           f"  reachable flow while resting (front-of-queue would fill): "
-           f"A ${hit_total['A']:,.0f}   B ${hit_total['B']:,.0f}"]
+           f"  flow AT our px while resting (queue-gated): "
+           f"A ${hit_at['A']:,.0f}   B ${hit_at['B']:,.0f}",
+           f"  flow BELOW our px while resting (fills regardless of queue "
+           f"— any nonzero needs explaining): "
+           f"A ${hit_below['A']:,.0f}   B ${hit_below['B']:,.0f}"]
     out += pull_lines
     return "\n".join(out + rows)
 

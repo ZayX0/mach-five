@@ -51,14 +51,19 @@ def check() -> None:
     assert _book_at(books["A"], T) == (0.49, [[0.49, 150.0], [0.485, 200.0]])
     assert _book_at(books["A"], T - 100) == (None, [])
 
-    # _hit: SELLs at/below px inside the window only
+    # _hit: (at px, strictly below px) SELLs inside the window only —
+    # "below" is the decisive column: it fills regardless of queue
     trades = [e for e in events if e["type"] == "trade"]
-    assert abs(_hit(trades, "A", 0.485, T, T + 60) - 48.5) < 1e-9
-    assert _hit(trades, "B", 0.495, T, T + 60) == 0.0
+    at, below = _hit(trades, "A", 0.485, T, T + 60)
+    assert abs(at - 48.5) < 1e-9 and below == 0.0, (at, below)
+    at2, below2 = _hit(trades, "A", 0.49, T, T + 60)     # px one tick up:
+    assert abs(below2 - 48.5) < 1e-9, below2             # same print is BELOW
+    assert _hit(trades, "B", 0.495, T, T + 60) == (0.0, 0.0)
 
     rep = game_report(slug, journal, meta, events)
     assert "1 quoting / 1 holding" in rep, rep
-    assert "hit $48" in rep or "hit $49" in rep, rep     # ~$48.5 reachable
+    assert "hit $48" in rep or "hit $49" in rep, rep     # ~$48.5 at our px
+    assert "SWEPT" not in rep and "BELOW our px" in rep, rep
     assert "150 at lvl" not in rep                        # A px is 2nd level
     assert "200 at lvl" in rep, rep                       # displayed at 0.485
     assert "-0.5c vs bid" in rep, rep                     # a tick behind touch
