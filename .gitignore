@@ -6,6 +6,10 @@
 # to bulk storage by archive_recordings.py, never versioned
 recordings/
 
+# per-session quoting journals (mach_five.Journal) — data, not code;
+# analyzed by session_report.py
+journals/
+
 # runtime logs
 *.log
 nohup.out

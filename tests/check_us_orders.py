@@ -129,8 +129,11 @@ def check() -> None:
     b.net_a = -10.0
     assert abs(b.inventory_dollars(0.48) + 10.0 * 0.52) < 1e-9
     b.post("A", 0.472, 100.0)
-    # post tracks the resting bid (id, SNAPPED price, $) for the keep policy
-    assert b.resting["A"] == {"id": "O1", "price": 0.47, "dollars": 100.0}
+    # post tracks the resting bid (id, SNAPPED price, $, arrival ts) for
+    # the keep policy and the session journal's queue-age math
+    r = b.resting["A"]
+    assert (r["id"], r["price"], r["dollars"]) == ("O1", 0.47, 100.0), r
+    assert r["since"] is not None
     b.cancel_all()
     assert len(c2.orders.created) == 1 and len(c2.orders.cancels) == 1
     assert b.resting == {}                      # cancel_all drops tracking

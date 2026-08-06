@@ -24,6 +24,7 @@ flattened automatically — close_position by hand or hold through
 settlement; decide per NEXT_STEPS step 8.
 """
 from __future__ import annotations
+import json
 import os
 import signal
 import sys
@@ -80,6 +81,28 @@ def quotes(fv: float, inventory: float) -> tuple[tuple[float, float], tuple[floa
     return (bid_a, max(0.0, size_a)), (bid_b_in_a, max(0.0, size_b))
 
 
+class Journal:
+    """Per-session JSONL of per-tick quoting state — guard verdict, per-side
+    keep/post decisions, resting prices — under journals/ next to the repo.
+    PURE OBSERVABILITY: it changes no quoting behavior, and a write failure
+    must never touch the loop, so every append is best-effort-silent.
+    Analyzed offline by session_report.py."""
+
+    def __init__(self, path: str | None = None):
+        self.path = path            # resolved lazily on first write
+
+    def write(self, obj: dict) -> None:
+        try:
+            if self.path is None:
+                os.makedirs("journals", exist_ok=True)
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+                self.path = os.path.join("journals", f"session-{stamp}.jsonl")
+            with open(self.path, "a") as f:
+                f.write(json.dumps(obj) + "\n")
+        except Exception:
+            pass                    # observability never breaks quoting
+
+
 def keep_quote(resting_price: float, resting_dollars: float, price: float,
                size: float, resize_frac: float | None = RESIZE_FRAC) -> bool:
     """Keep-if-unchanged requote policy, shared with replay's policy tables
@@ -95,12 +118,16 @@ def keep_quote(resting_price: float, resting_dollars: float, price: float,
             or abs(resting_dollars - size) <= resize_frac * size)
 
 
-def step(book: us_orders.UsBook, price_a: int, price_b: int) -> None:
+def step(book: us_orders.UsBook, price_a: int, price_b: int) -> dict:
     """One requote cycle for one game: real inventory -> fresh quotes,
     KEEP-IF-UNCHANGED per side (see keep_quote) — cancel-replacing every
     tick would surrender the queue spot, and queue position is the fill
     edge. Strays (resting orders we don't track) are swept every cycle;
-    orders.list is the authority on what actually rests."""
+    orders.list is the authority on what actually rests.
+
+    Returns a per-tick state dict for the session journal (fv, net_a, and
+    per side act/px/sz/since) — observability only, no caller keys
+    behavior off it."""
     fv = fair_value(price_a, price_b)
     was = book.net_a
     book.poll_fills()
@@ -114,23 +141,36 @@ def step(book: us_orders.UsBook, price_a: int, price_b: int) -> None:
     if strays:
         _log(f"VERIFY {book.slug}: canceled {strays} untracked order(s)")
     kept = posted = 0
+    sides: dict[str, dict] = {}
     for side in ("A", "B"):
         price, size = want[side]
         o = book.resting.get(side)
         if (o is not None and o["id"] in open_ids
                 and keep_quote(o["price"], o["dollars"], price, size)):
             kept += 1                     # hold the queue spot
+            sides[side] = {"act": "kept", "px": o["price"],
+                           "sz": o["dollars"], "oid": o["id"],
+                           "since": o.get("since")}
             continue
         book.cancel_side(side, open_ids)
-        if size > 0 and book.post(side, price, size):
+        oid = book.post(side, price, size) if size > 0 else None
+        if oid:
             posted += 1
+        # act "none": degenerate size, or a create the venue rejected
+        sides[side] = {"act": "posted" if oid else "none", "px": price,
+                       "sz": size, "oid": oid,
+                       "since": (book.resting.get(side) or {}).get("since")}
+    out = {"fv": fv, "net_a": book.net_a, "kept": kept, "posted": posted,
+           "strays": strays, "sides": sides}
     if posted:
         # the venue drops would-cross post-only orders silently (pilot
         # session 1) — orders.list is the only authority on what rests
         resting = book.open_count()
+        out["open"] = resting
         if resting != kept + posted:
             _log(f"VERIFY {book.slug}: {resting}/{kept + posted} orders "
                  "resting (silent post-only rejection or instant fill)")
+    return out
 
 
 def resolve_book(game: Game) -> us_orders.UsBook | None:
@@ -208,6 +248,7 @@ def run() -> None:
     quoters: dict[str, Quoter] = {}      # slug -> Quoter
     keys: dict[str, str] = {}            # market_id|commence -> slug
     skipped: set[str] = set()
+    journal = Journal()
     allow = allowlist()
     _log(f"allowlist: {', '.join(sorted(allow))}" if allow else
          "allowlist EMPTY (MACH_FIVE_SLUGS unset): quoting every "
@@ -232,6 +273,8 @@ def run() -> None:
                 q.book.cancel_all()
                 q.quoting = False
                 _log(f"PULLED {q.book.slug}: {reason}")
+                journal.write({"type": "pull", "ts": time.time(),
+                               "slug": q.book.slug, "reason": reason})
             except Exception as e:
                 _log(f"pull failed {q.book.slug}: {e}")
 
@@ -250,7 +293,7 @@ def run() -> None:
     feed.start()
 
     try:
-        _run_loop(quoters, keys, skipped, allow, lock, feed, hold)
+        _run_loop(quoters, keys, skipped, allow, lock, feed, hold, journal)
     finally:
         with lock:
             shutdown(quoters)   # Ctrl-C / SIGTERM / crash: leave no orphans
@@ -258,7 +301,8 @@ def run() -> None:
 
 def _run_loop(quoters: dict[str, Quoter], keys: dict[str, str],
               skipped: set[str], allow: set[str], lock: threading.Lock,
-              feed: us_market.TradeFeed, hold) -> None:
+              feed: us_market.TradeFeed, hold,
+              journal: Journal | None = None) -> None:
     """run()'s forever-loop, split out so its exit (whatever the cause)
     always flows through run()'s finally-shutdown."""
     while True:
@@ -333,14 +377,22 @@ def _run_loop(quoters: dict[str, Quoter], keys: dict[str, str],
                                           feed.age(now))
             if ok:
                 try:
-                    step(q.book, game.price_home, game.price_away)
+                    res = step(q.book, game.price_home, game.price_away)
                     if not q.quoting:
                         _log(f"QUOTING {slug}")
                     q.quoting = True
+                    if journal:
+                        journal.write({"type": "tick", "ts": now,
+                                       "slug": slug, "quoting": True, **res})
                 except Exception as e:
                     _log(f"step failed {slug}: {e}")
-            elif q.quoting or reason != q.last_reason:
-                hold(q, reason)
+            else:
+                if q.quoting or reason != q.last_reason:
+                    hold(q, reason)
+                if journal:
+                    journal.write({"type": "tick", "ts": now, "slug": slug,
+                                   "quoting": False, "reason": reason,
+                                   "fv": fv, "net_a": q.book.net_a})
             q.last_reason = reason
 
         # games that vanished from the odds response never reach the loop
@@ -355,6 +407,11 @@ def _run_loop(quoters: dict[str, Quoter], keys: dict[str, str],
                                           None, feed.age(now))
             if not ok and (q.quoting or reason != q.last_reason):
                 hold(q, reason)
+            if journal and not ok:
+                journal.write({"type": "tick", "ts": now, "slug": q.book.slug,
+                               "quoting": False, "reason": reason,
+                               "missing": True, "fv": q.last_fv,
+                               "net_a": q.book.net_a})
             q.last_reason = reason
 
         # drop games past their pitch; belt-and-braces cancel (the venue

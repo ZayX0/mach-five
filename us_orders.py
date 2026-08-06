@@ -35,6 +35,7 @@ no real orders).
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, field
 
 import us_market
@@ -205,7 +206,7 @@ class UsBook:
             self.resting.pop(side, None)
         else:
             self.resting[side] = {"id": oid, "price": snap_bid(price),
-                                  "dollars": dollars}
+                                  "dollars": dollars, "since": time.time()}
         return oid
 
     def open_count(self) -> int:

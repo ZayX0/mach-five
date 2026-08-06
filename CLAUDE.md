@@ -39,6 +39,13 @@ No build system — plain Python scripts, one concern per module.
   slates are in the repo-local `recordings/` and history is on the NFS
   at `/mach-five/recordings` (nightly archive moves closed days there);
   the laptop's local copies end at 2026-08-05.
+- **Analyze a live session:** `python3 session_report.py
+  journals/session-<stamp>.jsonl [recordings-dir]` — per-tick "why no
+  fill" report joining the session journal (`mach_five.Journal`, one
+  JSONL line per game-tick: guard verdict + per-side keep/post state;
+  pure observability, never affects quoting) with the recorder's book
+  and tape: our price vs the touch, displayed size at our level,
+  reachable flow while resting, queue age lost per guard pull.
 - **Archive closed days:** `python3 archive_recordings.py recordings <dest>`
   gzip-moves day folders older than today UTC (and quiet 6h+) to bulk
   storage; on the Linux server this runs nightly via `deploy/` systemd

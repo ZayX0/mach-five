@@ -43,12 +43,16 @@ def check() -> None:
     assert keep_quote(0.47, 40.0, 0.47, 90.0, None)    # price-only variant
 
     # step() tick 1 (nothing resting): a post-only bid on each side
-    # straddling fv; no cancels — there is nothing to cancel
+    # straddling fv; no cancels — there is nothing to cancel. Its return
+    # is the journal's per-tick state (observability only)
     c = FakeClient()
     book = UsBook("aec-mlb-nyy-chc", long_side="B", client=c)
-    step(book, -136, 124)
+    res = step(book, -136, 124)
     assert not c.orders.cancels and not c.orders.single_cancels
     assert len(c.orders.created) == 2, c.orders.created
+    assert res["posted"] == 2 and res["kept"] == 0 and res["open"] == 2
+    assert res["sides"]["A"]["act"] == "posted" and res["sides"]["A"]["oid"]
+    assert res["sides"]["A"]["since"] is not None
     a, b = c.orders.created
     assert a["intent"] == "ORDER_INTENT_BUY_SHORT"   # A=home, away is long
     assert b["intent"] == "ORDER_INTENT_BUY_LONG"
@@ -60,9 +64,13 @@ def check() -> None:
     assert pa4 + pb4 < 1.0, "the pair must still cost < $1 after snapping"
     assert all(o["participateDontInitiate"] for o in (a, b))
 
-    # tick 2, sharp price unchanged: both sides KEPT — no venue churn
-    step(book, -136, 124)
+    # tick 2, sharp price unchanged: both sides KEPT — no venue churn,
+    # and no orders.list verify call needed (posted == 0 -> no "open" key)
+    res2 = step(book, -136, 124)
     assert len(c.orders.created) == 2 and not c.orders.single_cancels
+    assert res2["kept"] == 2 and res2["posted"] == 0 and "open" not in res2
+    assert res2["sides"]["B"]["act"] == "kept"
+    assert res2["sides"]["B"]["since"] == res["sides"]["B"]["since"]
 
     # tick 3, sharp price moves: each side cancel-replaced BY ID (never
     # cancel_all — that would surrender both queue spots)
@@ -90,6 +98,19 @@ def check() -> None:
     finally:
         m5._log = old_log
     assert any("VERIFY" in m and "0/2" in m for m in logs), logs
+
+    # Journal: appends JSONL; a broken path must be silently tolerated
+    import json as _json
+    import tempfile
+    from mach_five import Journal
+    with tempfile.TemporaryDirectory() as tmp:
+        j = Journal(path=str(Path(tmp) / "j.jsonl"))
+        j.write({"type": "tick", "ts": 1.0, "slug": "s", "quoting": True})
+        j.write({"type": "pull", "ts": 2.0, "slug": "s", "reason": "r"})
+        lines = [_json.loads(l) for l in
+                 (Path(tmp) / "j.jsonl").read_text().splitlines()]
+        assert [l["type"] for l in lines] == ["tick", "pull"], lines
+    Journal(path="/nonexistent-dir/x/y.jsonl").write({"a": 1})  # no raise
 
     # allowlist(): the pilot's one-game restriction, parsed from the env
     os.environ["MACH_FIVE_SLUGS"] = " aec-mlb-a-b , aec-mlb-c-d ,"
