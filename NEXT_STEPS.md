@@ -106,29 +106,43 @@ guide; read 2026-07-31).
    the live game at 21:58Z and the loop held on a phantom stale anchor
    through the richest 70min of flow. Fills remain unproven; the
    positions-keyed-by-slug checklist carries to session 3.
+8c. **Pilot session 3 RUN 2026-08-06** (TOR-CHC, first session from the
+   Pi via `systemd-run` + `LoadCredentialEncrypted`; first live run of
+   the keep-if-unchanged requote policy, 8e44a44). Morning surprise:
+   Pinnacle went dark FEED-WIDE ~11:30-15:00Z (all MLB events, empty
+   bookmaker lists, quota fine) — the 14:26Z decide aborted correctly;
+   a two-shot retry (16:00Z/18:30Z) launched at 16:00Z. ZERO fills,
+   $0 P&L, net_a +0.0, clean SIGTERM shutdown, orders.list AND
+   positions verified empty post-session. 122min quoting across 5
+   stints (90% of the window), $67k printed while quoting, fv range
+   just 1.2c. What it proved: (a) keep-if-unchanged live — per-side
+   repricing on tick moves (B-side alone 16:22Z, A-side alone 16:37Z),
+   hours-scale queue age, zero tracking desyncs; (b) guard firings 3-6:
+   two big prints ($8.1k/$10.4k, benign in hindsight — fv flat after,
+   tail insurance paid as designed) and the one-sided-flow trigger's
+   first live firings (+$6,005/+$7,893 per 120s at 18:10/18:13Z) which
+   were GENUINE — venue led, Pinnacle followed ~0.5c, a real pickoff
+   dodged; (c) VERIFY caught a would-cross silent rejection IN-TICK
+   (session 1's hour-long blind spot, now seconds). Cost observation
+   for the queue thesis: every guard pull resets queue age on re-post —
+   two pulls landed in the richest pre-pitch window. Fills remain
+   unproven; positions-keyed-by-slug carries to session 4.
 
 ## Session 3 priorities (from the session-2 post-mortem, 2026-08-05)
 
 1. **Picker: rank on our own recorded tape, not the gateway stat.**
-   `stats.notionalTraded` RESETS on a ~21:00Z daily session roll (read
-   $60k at 18:14Z, $35k at 21:48Z same market — not cumulative), and
-   games with no Pinnacle line at decision time are silently invisible
-   (2026-08-05 the true volume leaders — LAD-CHC $1.8M, TOR-HOU $1.0M by
-   tape — were never candidates; unquotable without an anchor, but the
-   picker should SAY so). Recorder tape sums are ground truth and can't
-   reset. Consider re-ranking at launch time (leader can change; Pinnacle
-   posts some lines late).
-2. **Keep-in-place quoting** — stop resetting queue position: today
-   step() cancel-replaces every 60s tick even at an unchanged price, so
-   we rejoin the back of the queue forever (why session 1+2 sat behind
-   deep levels). Change: only cancel-replace when the SNAPPED price or
-   size changes; the repost decision must key off `open_orders` (what
-   actually rests), never "what we posted last tick", or silent
-   rejections become permanent dark sides (session 1's bug, deliberate).
-   Never replace on a coarser threshold than a tick — the sweep showed
-   ~half a tick of staleness flips markout negative. RUN THE REPLAY
-   EXPERIMENT FIRST: simulate() keep-in-place variant vs live behavior,
-   pessimistic queue, quantify fills gained vs markout cost.
+   STILL OPEN (softened): session 3's 16:00Z gateway ranking happened to
+   match the recorder-tape ranking (TOR-CHC then PIT-MIL), but the
+   underlying flaws stand — `stats.notionalTraded` RESETS on a ~21:00Z
+   daily session roll, and games with no Pinnacle line at decision time
+   are silently invisible. Recorder tape sums are ground truth and can't
+   reset.
+2. ~~Keep-in-place quoting~~ DONE 2026-08-06 (8e44a44): replay verdict
+   first (61 games, pessimistic queue: ~30x fewer posts, ~30% more
+   fills, flat markout per filled $), then step()/UsBook mirrored it
+   (per-side cancel BY ID, `keep_quote` shared with replay, repost
+   decisions keyed off orders.list via open_ids, stray sweep). VALIDATED
+   LIVE in session 3 — see 8c.
 3. **Anchor resilience.** Pinnacle really does delist pre-game lines
    early sometimes (Dodgers-Cubs 08-03, ~70min before pitch; several
    08-05 games never priced; 2026-08-06 the entire feed was dark
@@ -141,9 +155,11 @@ guide; read 2026-07-31).
    x-requests-last=1) and appends `betonline` events to every open
    recording — including polls where Pinnacle is missing, which is the
    consistency measurement itself. Nothing reads them yet (replay skips
-   unknown types). Decide with data: coverage of betonline during
-   Pinnacle gaps, and betonline-vs-pinnacle fv error where both exist
-   (is the softer anchor good enough inside the quote window?).
+   unknown types). First 54min of data: 100% coverage where Pinnacle
+   was present, |fv diff| mean 0.42c / p95 0.88c / max 1.5c — close,
+   but not drop-in anchor-grade at the current 0.6c half-spread.
+   Decide with data: coverage of betonline during Pinnacle gaps, and
+   betonline-vs-pinnacle fv error where both exist.
 4. **First real fill** — everything above serves this; on it, run the
    step-8 checklist (positions keyed by slug, poll_fills latency, skew
    direction) before any size increase.
@@ -151,6 +167,28 @@ guide; read 2026-07-31).
 Data caveat for replay work: recordings BEFORE 2026-08-05 (fix 8546fcb)
 may have silently dropped/merged doubleheader games and same-matchup
 series overlaps in the fv feed — treat doubleheader days with suspicion.
+
+## Session 4 priorities (from the session-3 post-mortem, 2026-08-06)
+
+1. **First real fill, still.** Three sessions, ~7h of two-sided quoting,
+   zero fills — consistent with the pessimistic-queue model (tight
+   half-tick venue touch, deep displayed size, our bids 1-2 ticks
+   behind). The queue-age thesis now works for us (keep-if-unchanged
+   live); the remaining levers are session count and runway, not code.
+   Do NOT widen to 2 games at current funding: worst case is $180/game
+   against $250 — two games can breach it.
+2. **Guard-pull vs queue-age tradeoff (observe, don't change yet).**
+   Both one-sided-flow pulls in session 3 were correct, but every pull
+   re-posts at the back of the queue, and both big-print pulls (benign
+   in hindsight) landed in the richest windows. After a few more
+   sessions, measure from the recordings: how much queue age do
+   tail-insurance pulls cost vs the pickoffs they dodge? Re-sweep as
+   tape accumulates (sweep.py).
+3. **Betonline comparison** — let it accumulate ~a week alongside the
+   campaign, then analyze coverage during Pinnacle gaps specifically
+   (the 08-06 blackout predates the deploy by 4h; the next gap is the
+   real test). Carry-over items 1 (picker) and 4 (fill checklist) above
+   remain open.
 
 8. **First live session at pilot size**: DONE 2026-08-04 in code —
    `BASE_SIZE = 40` and `MAX_INVENTORY = 100` are set in `mach_five.py`
@@ -218,9 +256,19 @@ at ~150MB/day live). Server-side checklist, in order:
    moves them, 08-05-2026/ holds a laptop .jsonl (pre-game) AND a Pi
    .jsonl.gz (in-game tail) for ~7 games; dedupe before replaying that
    day.
-8. Live sessions move last: run one paper day on the server (recorder +
-   replay), then the next pilot launches from the server with the same
-   MACH_FIVE_LIVE/MACH_FIVE_SLUGS gates.
+8. DONE 2026-08-06 (user's call, ahead of a full clean paper day):
+   pilot session 3 ran from the Pi end-to-end — see 8c. Launch pattern
+   for anything authed outside the recorder unit:
+   `sudo systemd-run --unit=<name> --collect --uid=zayfu
+   -p WorkingDirectory=/home/zayfu/mach-five
+   -p LoadCredentialEncrypted=mach-five-key-id:/etc/mach-five/key-id.cred
+   -p LoadCredentialEncrypted=mach-five-secret-key:/etc/mach-five/secret-key.cred
+   <script>` — a bare nohup CANNOT read the creds (no Keychain, no
+   $CREDENTIALS_DIRECTORY). systemd expands `${var}` in ExecStart args
+   (use a script file); `systemctl stop <unit>` SIGTERMs the cgroup so
+   the finally-shutdown still cancels orders. Remaining laptop cleanup:
+   retire the launchd recorder plist + delete pilot_run.sh/pilot2_run.sh
+   after the 08-06 merge timer clears.
 
 ## Also pending (from earlier findings)
 

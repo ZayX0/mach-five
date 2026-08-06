@@ -28,15 +28,17 @@ No build system — plain Python scripts, one concern per module.
   python-dotenv). E.g. `python3 -c "from odds_feed import pinnacle_moneylines; print(len(pinnacle_moneylines()))"`.
 - **Record market data:** since 2026-08-05 the recorder runs on the Pi
   server (`deploy/mach-five-recorder.service`, systemd, Restart=always;
-  `journalctl -u mach-five-recorder -f`). After a code change there:
-  `git pull && sudo systemctl restart mach-five-recorder`. NEVER run a
-  second recorder on this laptop — two two-speed pollers blow the
-  20k/month Odds API quota (the old launchd agent
-  `com.mach-five.recorder` is stopped but still installed; kickstart
-  would resurrect it). Analyze with
-  `python3 replay.py recordings` (expands day folders — `.jsonl` and
-  archived `.jsonl.gz` alike — skips `intl/`); laptop recordings through
-  2026-08-05 live here, later slates land on the Pi/NFS.
+  `journalctl -u mach-five-recorder -f`). After a code change on the Pi:
+  restart with `sudo systemctl restart mach-five-recorder` (from the
+  laptop: `git pull` there first). NEVER run a second recorder anywhere
+  — two two-speed pollers blow the 20k/month Odds API quota (the
+  laptop's old launchd agent `com.mach-five.recorder` is stopped but
+  still installed; kickstart would resurrect it). Analyze with
+  `python3 replay.py <dir>` (expands day folders — `.jsonl` and
+  archived `.jsonl.gz` alike — skips `intl/`): on the Pi, current
+  slates are in the repo-local `recordings/` and history is on the NFS
+  at `/mach-five/recordings` (nightly archive moves closed days there);
+  the laptop's local copies end at 2026-08-05.
 - **Archive closed days:** `python3 archive_recordings.py recordings <dest>`
   gzip-moves day folders older than today UTC (and quiet 6h+) to bulk
   storage; on the Linux server this runs nightly via `deploy/` systemd
@@ -52,7 +54,9 @@ with an offline assertion rather than adding a test framework.
 `mach_five.run()` is the loop. Per tick, per game:
 
 ```
-odds_feed.pinnacle_moneylines()   The Odds API /odds, bookmakers=pinnacle, markets=h2h
+odds_feed.pinnacle_moneylines()   The Odds API /odds, bookmakers=pinnacle,betonlineag
+                                  (one credit; betonlineag is recorded-only — see
+                                  moneylines_by_book / recorder "betonline" events)
    -> Game(home, away, price_home, price_away, commence_time)
 fair_value.fair_prob(a, b)        American -> implied prob -> devig -> P(home wins)
 mach_five.quotes(fv, inventory)   fv +/- HALF_SPREAD, shifted by inventory skew
@@ -145,9 +149,12 @@ Three modules answer "when before first pitch should quoting turn on".
 reference only (see NEXT_STEPS.md "Which Polymarket?"). US structure: ONE instrument per game (`marketSides`
 long/short, `long_side` in meta says whether long = home); everything is
 normalized back into the A=home frame so replay.py runs unchanged. Books are
-keyless REST; trades come from the authed markets WebSocket (creds in the
-macOS Keychain as `mach-five-key-id` / `mach-five-secret-key` — never .env,
-scrubbed from logs). Units are calibrated (2026-08-02): trade `size` =
+keyless REST; trades come from the authed markets WebSocket (creds named
+`mach-five-key-id` / `mach-five-secret-key` — macOS Keychain on the laptop,
+systemd-encrypted files in `/etc/mach-five/*.cred` on the Pi, exposed only
+via `LoadCredentialEncrypted` so authed runs outside the recorder unit need
+the `systemd-run` pattern in NEXT_STEPS step 8 — never .env, scrubbed from
+logs). Units are calibrated (2026-08-02): trade `size` =
 contracts, price*size = dollars, `stats.notionalTraded` is in CENTS; the
 in-play tape undercounts ~2x (pre-game is complete) — see us_market.py's
 docstring. Maker AND taker fees measured at 0 bps on this account.
