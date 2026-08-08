@@ -46,6 +46,16 @@ No build system — plain Python scripts, one concern per module.
   pure observability, never affects quoting) with the recorder's book
   and tape: our price vs the touch, displayed size at our level,
   reachable flow while resting, queue age lost per guard pull.
+- **Dedupe re-listed games:** `python3 dedupe_recordings.py [--apply]
+  <day-dirs>` — the recorder opens a second file when the feed re-lists
+  a game with a shifted commence time (filenames carry the commence
+  stamp), and replay double-weights that game. Groups by market slug
+  within a day folder, keeps the longest file, quarantines the rest to
+  `<root>-dupes/` (never deletes). Dry-run by default; refuses days
+  written <30 min ago. Run on closed days only (08-01→08-05 cleaned
+  2026-08-06; run on a new day only after its laptop/Pi merge, if any,
+  has landed). Same slug across two day folders is a real makeup game
+  and is left alone.
 - **Archive closed days:** `python3 archive_recordings.py recordings <dest>`
   gzip-moves day folders older than today UTC (and quiet 6h+) to bulk
   storage; on the Linux server this runs nightly via `deploy/` systemd
@@ -117,7 +127,16 @@ us_orders.UsBook                  post-only bids / cancel / real positions (SDK)
   posts, ~30% more fills, flat markout per filled $). `UsBook.resting`
   tracks the last bid per side, checked against `open_ids()` (the
   authority) every tick; untracked resting orders are swept by
-  `cancel_strays` since nothing blanket-cancels anymore.
+  `cancel_strays` since nothing blanket-cancels anymore. **Pricing is
+  fv +/- HALF_SPREAD with join-the-touch** (2026-08-07): `step()` runs
+  each bid through `touch_bid` against its own-frame book view
+  (`side_views`, from the same fetch that feeds the guard's mid) — lift
+  to the displayed touch NET of our own resting order (`touch_ex_self`)
+  when it keeps >= `JOIN_EDGE` (0.3c) below skew-adjusted fair, and
+  always cap one tick below the ask: the venue silently DROPS a
+  would-cross post-only order (create returns an id, nothing rests —
+  cost session 2026-08-06T2211 ~85min of side-B quoting). A fresh post
+  missing from `orders.list` is retried once, one tick lower.
 - **Gated:** `mach_five.run()` refuses to start without `MACH_FIVE_LIVE=1`
   in the env — it places real orders with real dollars. Do not set it until
   the NEXT_STEPS gate (campaign verdict) is cleared, and only at pilot size
@@ -129,7 +148,11 @@ us_orders.UsBook                  post-only bids / cancel / real positions (SDK)
   I/O — `mach_five.run()` feeds it): quotes rest only after both lineups
   are confirmed AND fv settled (`LINEUP_SETTLE_*`, shared with replay's
   `lu-gated` row so backtest and live agree), and are pulled on tape
-  bursts (via the trade-WS callback — seconds, not next tick), fv-vs-mid
+  bursts (via the trade-WS callback — seconds, not next tick; SIDE-AWARE
+  since 2026-08-07: only the side the flow is selling into is
+  pulled/cooled — `TapeStats` names it, `step()` zeroes it via `blocked`
+  — while the other bid keeps its queue spot; a single $8.2k print used
+  to burn 46min of queue age on both sides), fv-vs-mid
   divergence, feed silence (dead man), a stale fv anchor (`FV_STALE_SEC` —
   Pinnacle delists games pre-pitch, seen live 2026-08-03; games that vanish
   from the odds response get their own decision pass in `run()` since they
@@ -200,7 +223,12 @@ tape are keyless and unmetered.
   fill markout (negative markout = picked off by informed flow), and
   requote-policy tables (pessimistic queue) scoring keep-if-unchanged
   against cancel-replace-every-tick — the policies only separate where
-  queue position is modeled. A final
+  queue position is modeled — and a touch-pricing table (fix-2, verdict
+  2026-08-07 in `mach_five.touch_bid`'s docstring: join the touch when it
+  keeps >= min-edge vs skew-adjusted fair; ~3x fills at flat 300s markout,
+  `improve` a no-op, judge vs the `cap only` row since the uncapped
+  baseline counts fills the venue's silent would-cross drop never gives
+  us). A final
   table re-buckets fill markout relative to lineup completion — if fv
   settling is "lineups posted" in disguise, quote timing should key on the
   lineup event, not the clock.

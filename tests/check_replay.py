@@ -8,9 +8,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import mach_five
 from paper_book import PaperBook
 from replay import (RESIZE_FRAC, _fmt_fill_buckets, _fmt_lineup_buckets,
-                    _fmt_stats, _fmt_sweep, _keep, bucket, expand, fv_at,
-                    lineup_complete_ts, lineup_gated_start, markout,
-                    market_stats, simulate, snap_bid)
+                    _fmt_stats, _fmt_sweep, _fmt_touch, _keep, bucket,
+                    expand, fv_at, lineup_complete_ts, lineup_gated_start,
+                    markout, market_stats, simulate, snap_bid)
 
 
 def check() -> None:
@@ -148,6 +148,30 @@ def check() -> None:
                         reprice_only=True)
     assert keep2.posts == 4, keep2.posts
 
+    # touch pricing: fv 0.51 -> desired A 0.504 snaps to 0.50, one tick
+    # BEHIND the displayed 0.505 touch; a 0.502 print reaches the joined
+    # bid (0.505 keeps 0.5c edge vs fair) but never the baseline one
+    ev_t = [
+        {"type": "book", "ts": T - 7300, "side": "A", "best_bid": 0.505,
+         "best_ask": 0.515, "bids": [[0.505, 100000.0]],
+         "asks": [[0.515, 10.0]]},
+        {"type": "pinnacle", "ts": T - 7200, "fv": 0.51},
+        {"type": "trade", "ts": T - 7000, "token": "tokA",
+         "taker_side": "SELL", "price": 0.502, "size": 500.0},
+    ]
+    pbt, _ = simulate(meta, ev_t, quote_from_min=240, queue=True,
+                      reprice_only=True, resize_frac=RESIZE_FRAC,
+                      touch_edge=0.004)
+    assert len(pbt.fills) == 1 and pbt.fills[0].price == 0.505, pbt.fills
+    pbb, _ = simulate(meta, ev_t, quote_from_min=240, queue=True,
+                      reprice_only=True, resize_frac=RESIZE_FRAC)
+    assert not pbb.fills                    # baseline rests at 0.50, missed
+    # a stricter min edge refuses the lift: baseline behavior again
+    pbe, _ = simulate(meta, ev_t, quote_from_min=240, queue=True,
+                      reprice_only=True, resize_frac=RESIZE_FRAC,
+                      touch_edge=0.006)
+    assert not pbe.fills
+
     # report formatting shouldn't blow up
     assert "t-pitch" in _fmt_stats(agg)
     sweep = _fmt_sweep([(meta, events)])
@@ -157,6 +181,9 @@ def check() -> None:
                                     reprice_only=True,
                                     resize_frac=RESIZE_FRAC)
     assert "fill time" in _fmt_fill_buckets([(meta, events)])
+    touch = _fmt_touch([(meta, events)])
+    assert "baseline" in touch and "cap only" in touch
+    assert "join 0.4c" in touch and "imp 0.2c" in touch
 
     # expand: a directory recurses into day folders but skips intl/ unless
     # that folder is named explicitly; plain files pass through

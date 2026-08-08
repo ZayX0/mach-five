@@ -19,6 +19,14 @@ quoting turn on" two ways:
    separate; judge by fills AND markout (the marginal fills land while our
    quote sat still — check they aren't adversely selected), with the
    `posts` column as the churn/venue-load proxy.
+4. Touch-pricing comparison (fix-2 validation, sessions 2026-08-06): the
+   fv-derived bid usually snaps to one tick BEHIND a five/six-figure
+   displayed level, where a pilot-sized order never reaches the front.
+   The touch table re-runs the live policy with bids lifted to the touch
+   (or a tick inside) via mach_five.touch_bid whenever that keeps a
+   minimum edge vs skew-adjusted fair. Verdict 2026-08-07: join 0.3c is
+   wired into live step(); the table stays as the re-validation harness
+   (its `cap only` row is the honest no-join baseline).
 
 Usage:  python3 replay.py [recordings/*.jsonl]   (no args: recordings/)
 Offline check: python3 tests/check_replay.py
@@ -35,7 +43,7 @@ from pathlib import Path
 from guard import LINEUP_SETTLE_EPS, LINEUP_SETTLE_POLLS
 
 import mach_five
-from mach_five import RESIZE_FRAC, keep_quote, quotes
+from mach_five import HALF_SPREAD, RESIZE_FRAC, keep_quote, quotes, touch_bid
 from paper_book import PaperBook
 from us_orders import TICK, snap_bid  # noqa: F401  (TICK re-exported for tests)
 
@@ -49,6 +57,8 @@ HORIZONS = (60.0, 300.0, 1800.0)             # markout horizons, seconds
 SWEEP_FROM_MIN = (360, 240, 180, 120, 90, 60, 30)   # quote-start sweep
 QUOTE_UNTIL_MIN = 0                          # stop quoting at first pitch
 REPLAY_LATENCY_SEC = 2.0                     # order-live delay in the fill sim
+TOUCH_EDGES = (0.004, 0.003, 0.002)          # min edge kept when lifting a
+                                             # bid to the touch (touch table)
 # RESIZE_FRAC (size-drift tolerance) comes from mach_five with keep_quote —
 # the live loop and the replay MUST agree on what "unchanged" means
 # lineup-gated start parameters come from guard.py — the live loop and the
@@ -134,6 +144,7 @@ def simulate(
     quote_from_min: float, quote_until_min: float = QUOTE_UNTIL_MIN,
     start_ts: float | None = None, queue: bool = False,
     reprice_only: bool = False, resize_frac: float | None = None,
+    touch_edge: float | None = None, improve: bool = False,
 ) -> tuple[PaperBook, list[tuple[float, float]]]:
     """Replay one game, quoting from `quote_from_min` before first pitch to
     `quote_until_min` before. `start_ts` (absolute epoch) overrides the
@@ -148,25 +159,40 @@ def simulate(
     of mach_five.step's cancel-replace-every-tick. A kept order retains its
     latency clock and its eaten-down queue_ahead; a replaced side rejoins
     the back of the displayed queue. Prices are snapped even when
-    queue=False — the venue grid is what defines "the price moved"."""
+    queue=False — the venue grid is what defines "the price moved".
+
+    touch_edge (a min edge in price units, e.g. 0.004): touch pricing —
+    each bid runs through mach_five.touch_bid against the latest recorded
+    top-of-book (lift to the displayed touch, or one tick inside it when
+    `improve`, whenever that still clears touch_edge below skew-adjusted
+    fair; always capped one tick below the ask, the live step() cap).
+    None (default) leaves every historical table byte-identical."""
     commence = meta["commence_ts"]
     start = commence - quote_from_min * 60.0 if start_ts is None else start_ts
     end = commence - quote_until_min * 60.0
     pb = PaperBook(meta["token_a"], meta["token_b"], latency=REPLAY_LATENCY_SEC)
     fv_series: list[tuple[float, float]] = []
     books: dict[str, list] = {"A": [], "B": []}   # latest displayed bids
+    tops: dict[str, tuple] = {"A": (None, None), "B": (None, None)}
     for e in events:
         ts = e["ts"]
         if ts > end and pb.orders:          # window over: pull quotes
             pb.cancel_all()
         if e["type"] == "book" and e.get("side") in books:
             books[e["side"]] = e.get("bids") or []
+            tops[e["side"]] = (e.get("best_bid"), e.get("best_ask"))
         elif e["type"] == "pinnacle":
             fv = e["fv"]
             fv_series.append((ts, fv))
             if start <= ts <= end:          # requote per policy
                 (pa, sa), (pb_in_a, sb) = quotes(fv, pb.inventory_dollars(fv))
                 pb_price = 1.0 - pb_in_a
+                if touch_edge is not None:  # skew-adjusted fair = desired
+                    pa = touch_bid(         # (unsnapped) + HALF_SPREAD
+                        pa, pa + HALF_SPREAD, *tops["A"], touch_edge, improve)
+                    pb_price = touch_bid(
+                        pb_price, pb_price + HALF_SPREAD, *tops["B"],
+                        touch_edge, improve)
                 if queue or reprice_only:
                     pa, pb_price = snap_bid(pa), snap_bid(pb_price)
                 for side, price, size in (("A", pa, sa), ("B", pb_price, sb)):
@@ -245,7 +271,8 @@ def _fmt_stats(agg: dict) -> str:
 
 def _sweep_row(games: list[tuple[dict, list[dict]]], label: str,
                start_for, queue: bool = False, reprice_only: bool = False,
-               resize_frac: float | None = None) -> str:
+               resize_frac: float | None = None,
+               touch_edge: float | None = None, improve: bool = False) -> str:
     """One sweep row. `start_for(meta, events)` -> absolute quote-on ts, or
     None to skip that game (the lineup-gated strategy skips games whose
     lineups never post/settle on tape; clock strategies never skip)."""
@@ -259,7 +286,8 @@ def _sweep_row(games: list[tuple[dict, list[dict]]], label: str,
             continue
         pb, series = simulate(meta, events, 0.0, start_ts=st, queue=queue,
                               reprice_only=reprice_only,
-                              resize_frac=resize_frac)
+                              resize_frac=resize_frac,
+                              touch_edge=touch_edge, improve=improve)
         if not series:
             continue
         end = meta["commence_ts"] - QUOTE_UNTIL_MIN * 60.0
@@ -292,6 +320,37 @@ def _fmt_sweep(games: list[tuple[dict, list[dict]]], queue: bool = False,
         games, "lu-gated",
         lambda meta, events: lineup_gated_start(events), queue=queue,
         reprice_only=reprice_only, resize_frac=resize_frac))
+    return "\n".join(rows)
+
+
+def _fmt_touch(games: list[tuple[dict, list[dict]]]) -> str:
+    """Touch-pricing comparison at the LIVE policy settings (lu-gated
+    start, pessimistic queue, keep-if-unchanged + resize): baseline
+    fv-derived bids vs lifting to the displayed touch ('join') or one tick
+    inside it ('imp'), per TOUCH_EDGES minimum retained edge. The question
+    fix-2 asks: do the extra fills survive their markout, and what does
+    tracking the touch cost in posts (each reprice rejoins the queue)?"""
+    start = lambda meta, events: lineup_gated_start(events)  # noqa: E731
+    rows = ["    pricing   fills    posts   filled $   mark P&L $   " +
+            "   ".join(f"markout {int(h)}s $" for h in HORIZONS),
+            "  ---------   -----   ------   --------   ----------   " +
+            "   ".join("-" * (9 + len(str(int(h)))) for h in HORIZONS)]
+    rows.append(_sweep_row(games, "baseline", start, queue=True,
+                           reprice_only=True, resize_frac=RESIZE_FRAC))
+    # cap only: an unreachable min edge disables lifting but keeps the
+    # ask cap — the honest baseline. Fills it removes vs `baseline` were
+    # fictional: bids at/through the recorded ask that the live venue
+    # silently drops (the session-2211 pathology). Judge join/imp rows
+    # against THIS row, not the uncapped one.
+    rows.append(_sweep_row(games, "cap only", start, queue=True,
+                           reprice_only=True, resize_frac=RESIZE_FRAC,
+                           touch_edge=1.0))
+    for improve, tag in ((False, "join"), (True, "imp")):
+        for edge in TOUCH_EDGES:
+            rows.append(_sweep_row(
+                games, f"{tag} {edge * 100:.1f}c", start, queue=True,
+                reprice_only=True, resize_frac=RESIZE_FRAC,
+                touch_edge=edge, improve=improve))
     return "\n".join(rows)
 
 
@@ -398,6 +457,12 @@ def main(argv: list[str]) -> None:
     print(f">{int(RESIZE_FRAC * 100)}% (skew stays live at the cost of the queue spot)")
     print(_fmt_sweep(games, queue=True, reprice_only=True,
                      resize_frac=RESIZE_FRAC) + "\n")
+    print("TOUCH PRICING (lu-gated, pessimistic queue, keep-if-unchanged +")
+    print("resize — the live policy): lift a bid to the displayed touch")
+    print("('join') or one tick inside ('imp') when it keeps >= min edge vs")
+    print("skew-adjusted fair; bids capped a tick below the ask (live cap).")
+    print("Judge marginal fills by markout per filled $, churn by posts")
+    print(_fmt_touch(games) + "\n")
     print("Markout by fill time (widest window)")
     print(_fmt_fill_buckets(games) + "\n")
     print("Markout by fill time relative to lineup completion")

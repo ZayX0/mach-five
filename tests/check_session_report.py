@@ -42,6 +42,9 @@ def check() -> None:
                    "B": {"act": "posted", "px": 0.495, "sz": 40.0,
                          "oid": "O2", "since": T}}},
         {"type": "pull", "ts": T + 45, "slug": slug, "reason": "print 9999"},
+        # side-aware pull (fix 3): only the named side's queue age is lost
+        {"type": "pull", "ts": T + 50, "slug": slug, "side": "B",
+         "reason": "one-sided flow +7000/120s"},
         {"type": "tick", "ts": T + 60, "slug": slug, "quoting": False,
          "reason": "cooldown (print 9999)", "fv": 0.4906, "net_a": 0.0},
     ]
@@ -68,6 +71,8 @@ def check() -> None:
     assert "200 at lvl" in rep, rep                       # displayed at 0.485
     assert "-0.5c vs bid" in rep, rep                     # a tick behind touch
     assert "PULL" in rep and "queue age lost: A 1m, B 1m" in rep, rep
+    assert "B only: one-sided flow" in rep, rep
+    assert "queue age lost: B 1m)" in rep, rep           # A's age kept
     assert "cooldown (print 9999) x1" in rep, rep
 
     # loader + slug matcher work off real files
@@ -79,7 +84,7 @@ def check() -> None:
         (d / "day" / "g.jsonl").write_text(
             "\n".join(json.dumps(e) for e in [meta] + events) + "\n")
         j = load_journal(str(d / "j.jsonl"))
-        assert len(j) == 3 and j[0]["type"] == "tick"
+        assert len(j) == len(journal) and j[0]["type"] == "tick"
         recs = recordings_by_slug([str(d / "day")], {slug})
         assert slug in recs and recs[slug][0]["home"] == "Chicago Cubs"
     print("ok")

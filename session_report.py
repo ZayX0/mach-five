@@ -138,13 +138,17 @@ def game_report(slug: str, entries: list[dict], meta: dict,
     pull_lines = []
     for p in pulls:
         prior = [t for t in ticks if t["ts"] <= p["ts"] and t.get("quoting")]
+        # side-aware pulls (fix 3) name the pulled side and only that
+        # side's queue age is lost; legacy both-sides pulls carry no side
+        hit = (p["side"],) if p.get("side") else ("A", "B")
         ages = []
         if prior:
-            for side in ("A", "B"):
+            for side in hit:
                 s = (prior[-1].get("sides") or {}).get(side) or {}
                 if s.get("since"):
                     ages.append(f"{side} {(p['ts'] - s['since']) / 60:.0f}m")
-        pull_lines.append(f"  {_hms(p['ts'])}  PULL  {p['reason']}"
+        tag = f"{p['side']} only: " if p.get("side") else ""
+        pull_lines.append(f"  {_hms(p['ts'])}  PULL  {tag}{p['reason']}"
                           f"   (queue age lost: {', '.join(ages) or 'n/a'})")
     q = sum(1 for t in ticks if t.get("quoting"))
     out = [f"{slug}  ({meta.get('away')} @ {meta.get('home')})",

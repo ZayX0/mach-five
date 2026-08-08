@@ -65,10 +65,24 @@ def check() -> None:
     ok, _ = g.decision(t0 + FV_STALE_SEC + 9, 0.5, 0.5, 1.0)
     assert ok                             # ...quoting resumes immediately
 
-    # --- explicit toxic mark (the tape path) ------------------------------
+    # --- explicit toxic mark (the tape path); side None = both ------------
     g.mark_toxic(now, "print 9999")
     ok, why = g.decision(now + 1, 0.5, 0.5, 1.0)
     assert not ok and "print 9999" in why
+
+    # --- side-aware tape pulls (fix 3): one side cools, the other quotes --
+    t4 = now + 2 * TOXIC_COOLDOWN_SEC
+    g.on_fv(0.5, t4)                      # fresh anchor, cooldowns expired
+    ok, _ = g.decision(t4, 0.5, 0.5, 1.0)
+    assert ok
+    g.mark_toxic(t4, "print 7000", side="A")
+    assert g.side_blocked("A", t4 + 1) and not g.side_blocked("B", t4 + 1)
+    ok, _ = g.decision(t4 + 1, 0.5, 0.5, 1.0)
+    assert ok                             # half-blocked game keeps quoting
+    g.mark_toxic(t4 + 2, "one-sided flow -9000/120s", side="B")
+    ok, why = g.decision(t4 + 3, 0.5, 0.5, 1.0)   # now BOTH sides cooling
+    assert not ok and "print 7000" in why and "one-sided" in why, why
+    assert not g.side_blocked("A", t4 + TOXIC_COOLDOWN_SEC + 1)
 
     # --- tape stats --------------------------------------------------------
     t = TapeStats("tokA")
@@ -77,16 +91,24 @@ def check() -> None:
     # balanced two-way flow: quiet
     assert t.on_trade(line(0.0, "tokA", 0.5, 1000.0)) is None
     assert t.on_trade(line(1.0, "tokB", 0.5, 1000.0)) is None
-    # single huge print
+    # single huge print threatens the SOLD side's bid
     big = t.on_trade(line(2.0, "tokA", 0.5, (PRINT_MAX / 0.5) + 10))
-    assert big and big.startswith("print"), big
-    # one-sided grind past the window threshold
+    assert big and big[0].startswith("print") and big[1] == "A", big
+    tb = TapeStats("tokA")
+    big_b = tb.on_trade(line(0.0, "tokB", 0.5, (PRINT_MAX / 0.5) + 10))
+    assert big_b and big_b[1] == "B", big_b
+    # one-sided grind past the window threshold: A-selling threatens A...
     t2 = TapeStats("tokA")
     n, each = 8, (TAPE_ONESIDED_MAX / 8) + 1
     got = None
     for i in range(n):
         got = t2.on_trade(line(float(i), "tokA", 1.0, each))
-    assert got and "one-sided" in got, got
+    assert got and "one-sided" in got[0] and got[1] == "A", got
+    # ...and B-selling (positive signed flow) threatens B
+    t2b = TapeStats("tokA")
+    for i in range(n):
+        got = t2b.on_trade(line(float(i), "tokB", 1.0, each))
+    assert got and "one-sided" in got[0] and got[1] == "B", got
     # three prints that would trip the window sum together (3x2500 > 6000),
     # but the first expires out of the window: stays quiet
     each3 = (TAPE_ONESIDED_MAX / 3) + 500     # < PRINT_MAX, 3 in window trip

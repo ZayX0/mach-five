@@ -7,8 +7,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mach_five import (BASE_SIZE, MAX_INVENTORY, RESIZE_FRAC, allowlist,
                        fair_value, keep_quote, quotes, shutdown,
-                       size_override, step)
-from us_orders import UsBook
+                       side_views, size_override, step, touch_ex_self)
+from us_orders import TICK, UsBook, snap_bid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from check_us_orders import FakeClient
@@ -99,6 +99,104 @@ def check() -> None:
     finally:
         m5._log = old_log
     assert any("VERIFY" in m and "0/2" in m for m in logs), logs
+    # ...and is now CORRECTED, not just logged: each dropped side is
+    # retried once, one tick lower (2 posts + 2 retries)
+    assert len(c3.orders.created) == 4, c3.orders.created
+    assert any("RETRY" in m for m in logs), logs
+
+    # touch_bid: lift a bid to the displayed touch only while it clears
+    # min_edge below fair; otherwise the desired price stands
+    from mach_five import touch_bid
+    assert touch_bid(0.62, 0.63, 0.625, 0.64, 0.004) == 0.625   # join
+    assert touch_bid(0.62, 0.63, 0.625, 0.64, 0.006) == 0.62    # too thin
+    assert touch_bid(0.62, 0.63, None, None, 0.004) == 0.62     # no book
+    assert touch_bid(0.62, 0.63, 0.615, 0.64, 0.004) == 0.62    # touch below
+    # improve: one tick inside the touch when edge allows...
+    assert touch_bid(0.62, 0.64, 0.625, 0.65, 0.004, improve=True) == 0.63
+    # ...falling back to a plain join when the improved price is too thin
+    assert touch_bid(0.62, 0.63, 0.625, 0.64, 0.004, improve=True) == 0.625
+    # ask cap (step() parity) binds even on the improved price
+    assert touch_bid(0.62, 0.65, 0.625, 0.63, 0.004, improve=True) == 0.625
+
+    # side_views: per-side own-frame (bids ladder, best ask) from the raw
+    # long-frame book; the short side's view is the mirror
+    raw = {"bids": [(0.44, 5.0)], "asks": [(0.5, 7.0)]}
+    assert side_views(raw, "A") == {"A": ([(0.44, 5.0)], 0.5),
+                                    "B": ([(0.5, 7.0)], 0.56)}
+    assert side_views(raw, "B") == {"A": ([(0.5, 7.0)], 0.56),
+                                    "B": ([(0.44, 5.0)], 0.5)}
+    assert side_views(None, "A") == {"A": ([], None), "B": ([], None)}
+
+    # touch_ex_self: the joinable touch excludes our own resting order
+    assert touch_ex_self([(0.56, 21.0)], 0.56, 21) is None      # only us
+    assert touch_ex_self([(0.56, 22.0)], 0.56, 21) == 0.56      # not just us
+    assert touch_ex_self([(0.56, 21.0), (0.555, 40.0)], 0.56, 21) == 0.555
+    assert touch_ex_self([(0.56, 21.0)], None, 0) == 0.56       # not resting
+    assert touch_ex_self([], None, 0) is None
+
+    # step() + raw_book, long_side B, fv(-136,124) ~ 0.5635: desired A
+    # 0.5575 snaps to 0.555, one tick behind the displayed 0.56 touch,
+    # which keeps >= JOIN_EDGE vs fair -> join at 0.560. B's touch (0.425)
+    # sits below its desired 0.430 -> plain fv price
+    c4 = FakeClient()
+    book4 = UsBook("aec-mlb-nyy-chc", long_side="B", client=c4)
+    raw4 = {"bids": [(0.425, 50.0)], "asks": [(0.44, 50.0)]}
+    res4 = step(book4, -136, 124, raw4)
+    assert res4["sides"]["A"]["px"] == 0.56, res4["sides"]["A"]
+    assert res4["sides"]["B"]["px"] == 0.43, res4["sides"]["B"]
+    # same book next tick: the joined quote is unchanged and KEPT (our own
+    # 21 contracts leave 29 of the displayed 50 at the touch)
+    res4b = step(book4, -136, 124, raw4)
+    assert res4b["sides"]["A"]["act"] == "kept"
+    assert res4b["sides"]["A"]["px"] == 0.56
+    # everyone else leaves the touch (displayed 21 = exactly our order):
+    # the self-netted touch vanishes and the bid falls back to fv pricing
+    res4c = step(book4, -136, 124,
+                 {"bids": [(0.425, 50.0)], "asks": [(0.44, 21.0)]})
+    assert res4c["sides"]["A"]["act"] == "posted"
+    assert res4c["sides"]["A"]["px"] == 0.555, res4c["sides"]["A"]
+
+    # ask cap (fix 1): a bid that would sit at/through its ask is lowered
+    # to one tick below it — the venue silently drops would-cross posts
+    c4b = FakeClient()
+    book4b = UsBook("aec-mlb-nyy-chc", long_side="B", client=c4b)
+    (wa, _), _ = quotes(fair_value(-136, 124), 0.0)
+    want_a = snap_bid(wa)                       # 0.555
+    raw_cap = {"bids": [(1.0 - want_a, 9.0)],   # long bid = A ask AT our px
+               "asks": [(0.45, 9.0)]}
+    res4d = step(book4b, -136, 124, raw_cap)
+    assert res4d["sides"]["A"]["px"] == snap_bid(want_a - TICK)
+    assert res4d["sides"]["A"]["act"] == "posted"
+
+    # blocked side (fix 3, mid-cooldown after a one-sided tape pull):
+    # sized to zero — resting order canceled, nothing posts — while the
+    # other side keeps quoting and its queue spot
+    c6 = FakeClient()
+    book6 = UsBook("aec-mlb-nyy-chc", long_side="B", client=c6)
+    r6 = step(book6, -136, 124)
+    a_oid = r6["sides"]["A"]["oid"]
+    r6b = step(book6, -136, 124, None, ("A",))
+    assert r6b["sides"]["A"]["act"] == "none" and r6b["blocked"] == ["A"]
+    assert a_oid in c6.orders.single_cancels        # resting A pulled
+    assert r6b["sides"]["B"]["act"] == "kept"       # B held its queue spot
+    r6c = step(book6, -136, 124)                    # cooldown over
+    assert r6c["sides"]["A"]["act"] == "posted" and "blocked" not in r6c
+
+    # retry detail: the reposted bid is one tick below the original and
+    # the journal side carries the retry marker
+    c5 = FakeClient()
+    c5.orders.respond = lambda p: {"id": "ghost"}   # accepted, never rests
+    book5 = UsBook("aec-mlb-nyy-chc", long_side="B", client=c5)
+    m5._log = logs.append
+    try:
+        res5 = step(book5, -136, 124)
+    finally:
+        m5._log = old_log
+    want5 = {"A": res5["sides"]["A"], "B": res5["sides"]["B"]}
+    (wa5, _), (wb5, _) = quotes(fair_value(-136, 124), 0.0)
+    assert want5["A"]["retry"] == 1 and want5["B"]["retry"] == 1
+    assert want5["A"]["px"] == snap_bid(snap_bid(wa5) - TICK)
+    assert want5["B"]["px"] == snap_bid(snap_bid(1.0 - wb5) - TICK)
 
     # Journal: appends JSONL; a broken path must be silently tolerated
     import json as _json

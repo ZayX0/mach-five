@@ -18,6 +18,13 @@ Toxic conditions (each pulls quotes and starts TOXIC_COOLDOWN_SEC):
   - tape burst: one-sided signed notional over TAPE_WINDOW_SEC beyond
     TAPE_ONESIDED_MAX, or a single print beyond PRINT_MAX. Units are real
     DOLLARS (calibrated 2026-08-02: size = contracts, price*size = $).
+    SIDE-AWARE (2026-08-07, fix 3): a burst is directional — selling A
+    endangers only OUR resting A bid (the falling side); the B bid drifts
+    safer and keeps its queue spot. TapeStats names the threatened side,
+    mark_toxic cools only it, and decision() stays green while the other
+    side quotes (step() zeroes the blocked side via `blocked`). Session
+    2026-08-06T1955: one $8.2k print pulled BOTH sides and burned 46min
+    of queue age on each.
     VALUES re-based by sweep.py 2026-08-04 (41 games): print size was
     barely predictive inside gated windows (>=1c-move rate ~4% at any
     size vs ~2% base) and the old 60s x $3000 flow rule caught 0 of 13
@@ -60,20 +67,25 @@ class TapeStats:
         self.token_a = token_a
         self.window: deque[tuple[float, float]] = deque()  # (ts, signed $)
 
-    def on_trade(self, line: dict) -> str | None:
-        """Feed one recorder-schema trade line; a reason string when the
-        tape turned toxic, else None. Sign: selling A = negative pressure
-        on A, selling B (== buying A) = positive."""
+    def on_trade(self, line: dict) -> tuple[str, str] | None:
+        """Feed one recorder-schema trade line; (reason, threatened side)
+        when the tape turned toxic, else None. Sign: selling A = negative
+        pressure on A, selling B (== buying A) = positive. trade_line
+        normalizes every print to a SELL of `token`, so the sold token IS
+        the side whose bid the flow endangers — the complementary side's
+        bid only drifts further behind and is safe to leave resting."""
         ts, notional = line["ts"], line["price"] * line["size"]
-        signed = -notional if line["token"] == self.token_a else notional
+        sold_a = line["token"] == self.token_a
+        signed = -notional if sold_a else notional
         self.window.append((ts, signed))
         while self.window and self.window[0][0] < ts - TAPE_WINDOW_SEC:
             self.window.popleft()
         if notional > PRINT_MAX:
-            return f"print {notional:.0f}"
+            return f"print {notional:.0f}", ("A" if sold_a else "B")
         flow = sum(s for _, s in self.window)
         if abs(flow) > TAPE_ONESIDED_MAX:
-            return f"one-sided flow {flow:+.0f}/{TAPE_WINDOW_SEC:.0f}s"
+            return (f"one-sided flow {flow:+.0f}/{TAPE_WINDOW_SEC:.0f}s",
+                    "A" if flow < 0 else "B")
         return None
 
 
@@ -86,8 +98,8 @@ class GameGuard:
     prev_fv: float | None = None
     last_fv_ts: float = 0.0  # epoch of the last Pinnacle poll (0 = never)
     gate_open: bool = False
-    toxic_until: float = 0.0
-    toxic_reason: str = ""
+    toxic_until: dict = field(default_factory=lambda: {"A": 0.0, "B": 0.0})
+    toxic_reason: dict = field(default_factory=lambda: {"A": "", "B": ""})
     delayed: bool = False  # MLB detailedState Delayed/Postponed/Suspended
 
     def on_lineups_confirmed(self) -> None:
@@ -111,9 +123,20 @@ class GameGuard:
             self.calm = 0
         self.prev_fv = fv
 
-    def mark_toxic(self, now: float, reason: str) -> None:
-        self.toxic_until = now + TOXIC_COOLDOWN_SEC
-        self.toxic_reason = reason
+    def mark_toxic(self, now: float, reason: str,
+                   side: str | None = None) -> None:
+        """Start a cooldown: side None = both (direction-less triggers,
+        e.g. divergence), 'A'/'B' = a tape burst threatening only that
+        side's bid — the other side keeps quoting and its queue spot."""
+        for s in ("A", "B") if side is None else (side,):
+            self.toxic_until[s] = now + TOXIC_COOLDOWN_SEC
+            self.toxic_reason[s] = reason
+
+    def side_blocked(self, side: str, now: float) -> bool:
+        """True while `side` sits inside a toxic cooldown. decision() only
+        goes red when BOTH sides are; a half-blocked game keeps quoting
+        and the caller zeroes the blocked side (mach_five.step `blocked`)."""
+        return now < self.toxic_until[side]
 
     def decision(self, now: float, fv: float, mid: float | None,
                  feed_age: float) -> tuple[bool, str]:
@@ -125,13 +148,14 @@ class GameGuard:
         if not self.gate_open:
             return False, ("awaiting lineups" if not self.lineups_done
                            else "awaiting fv settle")
-        if now < self.toxic_until:
-            return False, f"cooldown ({self.toxic_reason})"
+        if self.side_blocked("A", now) and self.side_blocked("B", now):
+            reasons = " + ".join(sorted(set(self.toxic_reason.values())))
+            return False, f"cooldown ({reasons})"
         if now - self.last_fv_ts > FV_STALE_SEC:
             return False, f"fv anchor stale {now - self.last_fv_ts:.0f}s"
         if feed_age > FEED_STALE_SEC:
             return False, f"tape feed silent {feed_age:.0f}s"
         if mid is not None and abs(fv - mid) > DIVERGENCE_MAX:
             self.mark_toxic(now, f"fv-mid divergence {abs(fv - mid):.3f}")
-            return False, f"cooldown ({self.toxic_reason})"
+            return False, f"cooldown ({self.toxic_reason['A']})"
         return True, ""
