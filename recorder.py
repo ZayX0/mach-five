@@ -63,6 +63,8 @@ ODDS_POLL_SLOW_SEC = 600.0  # slow cadence: no game near a first pitch
 FAST_BEFORE_H = 1.5      # fast window opens this long before a first pitch
 FAST_AFTER_H = 0.5       # ...and closes this long after (markout-horizon tail)
 MARKET_POLL_SEC = 15.0   # US books, keyless
+BOOK_BACKOFF_INITIAL_SEC = 60.0  # first retry stretch after a fully-failed cycle
+BOOK_BACKOFF_MAX_SEC = 900.0     # cap on the retry stretch
 LINEUP_POLL_SEC = 120.0  # MLB Stats API boxscores, keyless
 RECORD_FROM_H = 18.0     # US pre-game books are open (and trading) overnight
 RECORD_UNTIL_H = 5.0     # observe what the US book does post-start
@@ -313,6 +315,8 @@ def run() -> None:
     resolved: set[str] = set()
     games: dict[str, Game] = {}
     odds_due = last_lineups = 0.0
+    book_fails = 0          # consecutive fully-failed book cycles
+    book_next_ok = 0.0      # earliest ts at which book polling may resume
     cadence = ODDS_POLL_SEC
 
     def on_trade(trade: dict) -> None:
@@ -386,12 +390,20 @@ def run() -> None:
                 cadence = interval
             odds_due = now_ts + interval
 
+        book_blocked = bool(recs) and now_ts < book_next_ok
+        if book_blocked:
+            _log(f"book polling held: {book_next_ok - now_ts:.0f}s of backoff "
+                 f"remaining (fail streak {book_fails})")
+        book_attempts = book_failures = 0
         for key, rec in list(recs.items()):
             if not in_window(rec.game, now_dt):
                 _log(f"window closed for {rec.slug}")
                 del recs[key]
                 by_slug.pop(rec.slug, None)
                 continue
+            if book_blocked:
+                continue    # backoff active; odds/lineups keep polling
+            book_attempts += 1
             try:
                 record_books(rec, time.time())
                 rec.book_404s = 0
@@ -403,7 +415,22 @@ def run() -> None:
                     del recs[key]
                     by_slug.pop(rec.slug, None)
                 elif rec.book_404s == 0:   # real error, not a quiet 404 streak
+                    book_failures += 1
                     _log(f"market poll failed {rec.slug}: {e}")
+        # failure-aware pacing: ANY failed book poll in a cycle stretches the
+        # retry interval (doubling, capped) — mixed cycles still mean the
+        # shared gateway budget is exceeded; a fully clean cycle resets
+        if book_attempts:
+            if book_failures:
+                book_fails += 1
+                stretch = min(BOOK_BACKOFF_MAX_SEC,
+                              BOOK_BACKOFF_INITIAL_SEC * (2 ** (book_fails - 1)))
+                book_next_ok = now_ts + stretch
+                _log(f"book cycle had {book_failures}/{book_attempts} failures "
+                     f"(streak {book_fails}); next attempt in {stretch:.0f}s")
+            elif book_fails:
+                _log("book polls recovered; backoff streak cleared")
+                book_fails = 0
 
         if now_ts - last_lineups >= LINEUP_POLL_SEC:
             last_lineups = now_ts
