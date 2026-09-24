@@ -11,19 +11,20 @@
   <array>
     <string>/usr/bin/caffeinate</string>
     <string>-i</string>
-    <string>/Users/isaiahreed/.pyenv/versions/3.12.3/bin/python3</string>
+    <string>/path/to/python3</string>
     <string>recorder.py</string>
     <string>run</string>
   </array>
 
-  <!-- .env (ODDS_API_KEY) and recordings/ are resolved relative to here -->
+  <!-- edit the three /path/to/... entries to your layout (launchd needs
+       absolute paths). .env (ODDS_API_KEY) and recordings/ resolve here -->
   <key>WorkingDirectory</key>
-  <string>/Users/isaiahreed/Projects/mach-five</string>
+  <string>/path/to/mach-five</string>
 
   <key>StandardOutPath</key>
-  <string>/Users/isaiahreed/Projects/mach-five/recorder.log</string>
+  <string>/path/to/mach-five/recorder.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/isaiahreed/Projects/mach-five/recorder.log</string>
+  <string>/path/to/mach-five/recorder.log</string>
 
   <key>RunAtLoad</key>
   <true/>

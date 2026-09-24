@@ -5,14 +5,14 @@
 # LoadCredentialEncrypted; KillMode=mixed so a `systemctl stop` TERMs
 # the launcher only and the pilot's finally-shutdown gets to cancel):
 #
-#   sudo systemd-run --unit=mach-five-pilot --collect --uid=zayfu \
-#     -p WorkingDirectory=/home/zayfu/mach-five \
+#   sudo systemd-run --unit=mach-five-pilot --collect --uid=<user> \
+#     -p WorkingDirectory=<repo> \
 #     -p KillMode=mixed -p TimeoutStopSec=45 \
 #     -p LoadCredentialEncrypted=mach-five-key-id:/etc/mach-five/key-id.cred \
 #     -p LoadCredentialEncrypted=mach-five-secret-key:/etc/mach-five/secret-key.cred \
-#     /home/zayfu/mach-five/pilot_arm.sh
+#     <repo>/pilot_arm.sh
 #
 # Launcher arc + pilot output land in pilot.log (repo root).
-cd /home/zayfu/mach-five || exit 1
+cd "$(dirname "$0")" || exit 1
 export MACH_FIVE_BASE=10 MACH_FIVE_MAX=25
 exec .venv/bin/python3 pilot_launch.py --games 2

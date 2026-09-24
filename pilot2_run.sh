@@ -4,8 +4,8 @@
 #   decide 18:00 UTC (2pm ET) -> launch at first pitch - 3.5h ->
 #   SIGTERM at first pitch + 15min -> mach_five's finally-shutdown.
 # Runs detached (nohup); all output in pilot.log next to this script.
-cd /Users/isaiahreed/Projects/mach-five || exit 1
-PY=/Users/isaiahreed/.pyenv/versions/3.12.3/bin/python3
+cd "$(dirname "$0")" || exit 1
+PY=${PY:-python3}
 DECIDE=1785952800   # 2026-08-05 18:00:00 UTC
 
 log() { echo "[launcher $(date -u '+%H:%M:%S')] $*" >> pilot.log; }

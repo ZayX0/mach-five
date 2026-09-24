@@ -1,6 +1,7 @@
 # Recorder as a systemd unit — the Linux replacement for the launchd agent
 # com.mach-five.recorder (KeepAlive -> Restart=always; caffeinate is moot
 # on a server). Install:
+#   edit User= and the /opt/mach-five paths below to your layout, then:
 #   sudo cp deploy/mach-five-recorder.service /etc/systemd/system/
 #   sudo systemd-creds encrypt --name=mach-five-key-id <(printf '%s' "$KEY_ID") /etc/mach-five/key-id.cred        # or use plain LoadCredential files, 0600 root
 #   sudo systemctl daemon-reload && sudo systemctl enable --now mach-five-recorder
@@ -12,9 +13,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=zayfu
-WorkingDirectory=/home/zayfu/mach-five
-ExecStart=/home/zayfu/mach-five/.venv/bin/python3 recorder.py run
+User=mach-five
+WorkingDirectory=/opt/mach-five
+ExecStart=/opt/mach-five/.venv/bin/python3 recorder.py run
 Restart=always
 RestartSec=5
 # Polymarket US API creds, exposed at $CREDENTIALS_DIRECTORY/<name> —

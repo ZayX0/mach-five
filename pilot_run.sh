@@ -3,8 +3,8 @@
 #   launch 19:40 UTC (3:40pm ET), first pitch 23:11 UTC (7:10pm ET),
 #   SIGTERM 23:26 UTC -> mach_five's finally-shutdown cancels everything.
 # Runs detached (nohup); all output in pilot.log next to this script.
-cd /Users/isaiahreed/Projects/mach-five || exit 1
-PY=/Users/isaiahreed/.pyenv/versions/3.12.3/bin/python3
+cd "$(dirname "$0")" || exit 1
+PY=${PY:-python3}
 LAUNCH=1785872400   # 2026-08-04 19:40:00 UTC
 STOP=1785885960     # 2026-08-04 23:26:00 UTC
 

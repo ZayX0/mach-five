@@ -247,7 +247,7 @@ at ~150MB/day live). Server-side checklist, in order:
    `LoadCredential=`) — names `mach-five-key-id` / `mach-five-secret-key`,
    matching what `creds()` reads. NEVER `.env`.
 4. Mount the NFS at `/mach-five` (fstab, hard mount; done 2026-08-05 —
-   192.168.0.200:/volume1/backups/mach-five) and rsync the
+   `<nas>:<export>`) and rsync the
    laptop's `recordings/` there once (keep `intl/` with it).
 5. Edit paths/user in `deploy/*.service` to the server's layout, install
    all three units, `systemctl enable --now` the recorder service and the
@@ -276,8 +276,8 @@ at ~150MB/day live). Server-side checklist, in order:
 8. DONE 2026-08-06 (user's call, ahead of a full clean paper day):
    pilot session 3 ran from the Pi end-to-end — see 8c. Launch pattern
    for anything authed outside the recorder unit:
-   `sudo systemd-run --unit=<name> --collect --uid=zayfu
-   -p WorkingDirectory=/home/zayfu/mach-five
+   `sudo systemd-run --unit=<name> --collect --uid=<user>
+   -p WorkingDirectory=<repo>
    -p LoadCredentialEncrypted=mach-five-key-id:/etc/mach-five/key-id.cred
    -p LoadCredentialEncrypted=mach-five-secret-key:/etc/mach-five/secret-key.cred
    <script>` — a bare nohup CANNOT read the creds (no Keychain, no

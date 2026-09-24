@@ -1,5 +1,6 @@
 # One-shot: gzip-move closed recording days from local disk to the NFS
-# mount. Paired with mach-five-archive.timer; also safe to run by hand:
+# mount. Edit User= and the /opt/mach-five paths to your layout.
+# Paired with mach-five-archive.timer; also safe to run by hand:
 #   sudo systemctl start mach-five-archive
 [Unit]
 Description=mach-five recordings archiver (local disk -> NFS)
@@ -9,6 +10,6 @@ RequiresMountsFor=/mach-five
 
 [Service]
 Type=oneshot
-User=zayfu
-WorkingDirectory=/home/zayfu/mach-five
-ExecStart=/home/zayfu/mach-five/.venv/bin/python3 archive_recordings.py recordings /mach-five/recordings
+User=mach-five
+WorkingDirectory=/opt/mach-five
+ExecStart=/opt/mach-five/.venv/bin/python3 archive_recordings.py recordings /mach-five/recordings
