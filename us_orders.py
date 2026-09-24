@@ -8,7 +8,7 @@ PRICE FRAME (live-verified by the $1 proof order, 2026-08-02): the venue
 prices EVERY order in the LONG instrument's terms. A BUY_SHORT rests as a
 SELL of the long side at the submitted price — so buying the short side at
 its own price p must submit (1 - p). Submitting p unverified would have
-quoted ~2p-1 away from the intended level; the proof order (BMJPF7YWGBA3)
+quoted ~2p-1 away from the intended level; the proof order
 caught it: BUY_SHORT @ 0.465 landed at long-frame ask 0.465, not 0.535.
 
 Safety rails baked in:

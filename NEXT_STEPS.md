@@ -32,8 +32,7 @@ guide; read 2026-07-31).
    (custodial — no wallet). Every resting bid reserves its full cost, no
    leverage: 15 games x 2 sides x $100 = up to $3,000 reserved at peak.
 2. **iOS app: account + identity verification.** The app is the only
-   onboarding surface (KYC: SSN, photo ID, proof of address). Already done
-   for the existing account.
+   onboarding surface (identity verification is done in-app).
 3. **Create API credentials in the developer portal** (DONE 2026-07-31):
    polymarket.us/developer, sign in with the app credentials, create an API
    key -> **Key ID** + **Secret Key**. The secret is shown ONCE.
@@ -56,8 +55,8 @@ guide; read 2026-07-31).
    `us_market.find_market` and refuses to run without `MACH_FIVE_LIVE=1`.
    Still missing before live: quote window (lineup-gated, from the replay
    verdict) and the toxic-flow guard — neither is in the loop yet.
-7. **Prove it end-to-end with one $1 order** (DONE 2026-08-02, orders
-   BMJPF7YWGBA3 / BMJP0H20YBAC on aec-mlb-bos-lad): placed far-from-touch
+7. **Prove it end-to-end with one $1 order** (DONE 2026-08-02, two
+   orders on aec-mlb-bos-lad): placed far-from-touch
    post-only, confirmed resting via orders.list AND visible in the public
    book, modified, canceled, funds intact. KEY FINDING: the venue prices
    every order in the LONG side's terms — BUY_SHORT @ px rests as a long-
@@ -237,7 +236,7 @@ otherwise), `replay.py` reads `.jsonl.gz`, `archive_recordings.py` +
 writes local so an NFS stall can never cost tape; 8GB internal is plenty
 at ~150MB/day live). Server-side checklist, in order:
 
-1. DONE 2026-08-05: private GitHub remote (ZayX0/mach-five), cloned on
+1. DONE 2026-08-05: GitHub remote set up, cloned on
    the Pi; keep both sides rebased on origin/main — the 8546fcb odds-key
    fix MUST be pulled on the Pi before its recorder starts.
 2. `python3 -m pip install requests python-dotenv polymarket_us websockets`
